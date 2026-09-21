@@ -167,15 +167,16 @@
 
     window.addEventListener('mouseup', () => { isDragging = false; });
 
-    window.addEventListener('mousemove', (e) => {
+  window.addEventListener('mousemove', (e) => {
       if (!isDragging) return;
       const deltaX = e.clientX - prevMouse.x;
       const deltaY = e.clientY - prevMouse.y;
       prevMouse = { x: e.clientX, y: e.clientY };
 
       const sens = 0.0025;
-      yaw -= deltaX * sens;
-      pitch -= deltaY * sens;
+      // Segni invertiti: la sfera segue direttamente il trascinamento del mouse
+      yaw += deltaX * sens;
+      pitch += deltaY * sens;
 
       // Limita l'alzo per non ribaltare la visuale (da -85° a +85°)
       pitch = Math.max(-Math.PI * 0.48, Math.min(Math.PI * 0.48, pitch));
