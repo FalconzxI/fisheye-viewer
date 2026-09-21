@@ -89,7 +89,7 @@
     <strong>Controlli:</strong><br>
     • Mouse drag: Trascina la sfera<br>
     • Rotella / Slider / [ + / - ]: Zoom<br>
-    • [ L ]: Loop Seamless ON/OFF<br>
+    • [ L ]: Loop ON/OFF<br>
     • [ F ] o Doppio click: Schermo Intero<br>
     • Spazio: Play / Pausa<br>
     • Frecce [ ← / → ]: Salta ±3s (con Shift: 1 frame)
@@ -111,6 +111,7 @@
   </div>
 
   <div id="canvas-container"></div>
+  <video id="video-element" playsinline muted crossorigin="anonymous" style="display:none;"></video>
 
   <script>
     // --- 1. SETUP SCENA & CAMERA ---
@@ -227,103 +228,50 @@
     fovSlider.addEventListener('input', (e) => setFov(parseFloat(e.target.value)));
     window.addEventListener('wheel', (e) => setFov(camera.fov + (e.deltaY > 0 ? 3 : -3)));
 
-    // --- 5. DOPPIO PLAYER & MOTORE DI SCRUBBING FLUIDO ---
+    // --- 5. MOTORE VIDEO A SINGOLO LETTORE AD ALTE PRESTAZIONI ---
+    const video = document.getElementById('video-element');
     let isVideo = false;
     let isLooping = true;
-    let activeIdx = 0;
-    let isSwapping = false;
     let isScrubbing = false;
     let wasPlayingBeforeScrub = false;
     let previousBlobUrl = null;
+    let videoTexture = null;
 
-    // Variabile per accodare il seek senza intasare la pipeline
+    // Gestione seek senza intasamento (semaforo)
     let targetSeekTime = null;
 
-    const videos = [
-      document.createElement('video'),
-      document.createElement('video')
-    ];
-    let videoTextures = [null, null];
-
-    videos.forEach((v, idx) => {
-      v.playsInline = true;
-      v.crossOrigin = 'anonymous';
-      v.preload = 'auto';
-
-      // Non appena la GPU ha completato il seek, aggiorna subito la texture WebGL
-      v.addEventListener('seeked', () => {
-        if (videoTextures[idx]) {
-          videoTextures[idx].needsUpdate = true;
-        }
-        // Se durante la decodifica l'utente ha spostato ancora il mouse, esegui il seek più recente
-        if (targetSeekTime !== null) {
-          applySeek();
-        }
-      });
-
-      v.addEventListener('ended', () => {
-        if (isLooping) {
-          triggerSeamlessSwap();
-        } else {
-          playBtn.textContent = 'Play';
-        }
-      });
+    video.addEventListener('seeked', () => {
+      if (videoTexture) {
+        videoTexture.needsUpdate = true;
+      }
+      if (targetSeekTime !== null) {
+        applySeek();
+      }
     });
 
-    // Funzione sicura per richiedere il seek (evita il flood)
-    function applySeek() {
-      const cur = videos[activeIdx];
-      if (!cur || !cur.duration || targetSeekTime === null) return;
+    video.addEventListener('ended', () => {
+      if (!isLooping) {
+        playBtn.textContent = 'Play';
+      }
+    });
 
-      // Se la GPU sta già decodificando, aspetta l'evento 'seeked'
-      if (cur.seeking) return;
+    function applySeek() {
+      if (!isVideo || !video.duration || targetSeekTime === null) return;
+      if (video.seeking) return; // Attende che la GPU abbia finito
 
       const nextTime = targetSeekTime;
       targetSeekTime = null;
 
-      // Se il browser supporta fastSeek durante il drag continuo, usalo per massima fluidità
-      if (isScrubbing && typeof cur.fastSeek === 'function') {
-        cur.fastSeek(nextTime);
+      if (isScrubbing && typeof video.fastSeek === 'function') {
+        video.fastSeek(nextTime);
       } else {
-        cur.currentTime = nextTime;
+        video.currentTime = nextTime;
       }
     }
 
     function requestSeek(time) {
       targetSeekTime = time;
       applySeek();
-    }
-
-    function createVideoTexture(vid) {
-      const tex = new THREE.VideoTexture(vid);
-      tex.minFilter = THREE.LinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      tex.generateMipmaps = false;
-      return tex;
-    }
-
-    function triggerSeamlessSwap() {
-      if (!isVideo || !isLooping || isSwapping) return;
-      
-      const currentVid = videos[activeIdx];
-      const nextIdx = 1 - activeIdx;
-      const nextVid = videos[nextIdx];
-
-      if (!currentVid.duration) return;
-      isSwapping = true;
-
-      nextVid.currentTime = 0;
-      nextVid.play().then(() => {
-        activeIdx = nextIdx;
-        sphereMat.uniforms.map.value = videoTextures[activeIdx];
-
-        currentVid.pause();
-        currentVid.currentTime = 0;
-
-        setTimeout(() => { isSwapping = false; }, 120);
-      }).catch(() => {
-        isSwapping = false;
-      });
     }
 
     // --- 6. DRAG & DROP & CARICAMENTO RISORSE ---
@@ -354,9 +302,13 @@
     });
 
     function cleanupCurrentMedia() {
-      videos.forEach(v => { v.pause(); v.removeAttribute('src'); v.load(); });
-      videoTextures.forEach(t => { if (t) t.dispose(); });
-      videoTextures = [null, null];
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+      if (videoTexture) {
+        videoTexture.dispose();
+        videoTexture = null;
+      }
       targetSeekTime = null;
       if (previousBlobUrl) URL.revokeObjectURL(previousBlobUrl);
     }
@@ -371,21 +323,23 @@
         isVideo = true;
         timelinePanel.style.display = 'flex';
 
-        videos[0].src = url;
-        videos[1].src = url;
+        video.src = url;
+        video.loop = isLooping;
 
-        videoTextures[0] = createVideoTexture(videos[0]);
-        videoTextures[1] = createVideoTexture(videos[1]);
+        videoTexture = new THREE.VideoTexture(video);
+        videoTexture.minFilter = THREE.LinearFilter;
+        videoTexture.magFilter = THREE.LinearFilter;
+        videoTexture.generateMipmaps = false;
 
-        activeIdx = 0;
-        sphereMat.uniforms.map.value = videoTextures[0];
+        sphereMat.uniforms.map.value = videoTexture;
         sphereMat.uniforms.hasTexture.value = 1.0;
 
-        videos[0].play();
-        videos[1].pause();
-        videos[1].currentTime = 0;
+        video.play().then(() => {
+          playBtn.textContent = 'Pausa';
+        }).catch(() => {
+          playBtn.textContent = 'Play';
+        });
 
-        playBtn.textContent = 'Pausa';
       } else {
         isVideo = false;
         timelinePanel.style.display = 'none';
@@ -400,7 +354,20 @@
       }
     }
 
-    // --- 7. TIMELINE SCRUBBING FLUIDO & HOTKEYS ---
+    // --- 7. TIMELINE & CONTROLLI ---
+    function setLoop(enabled) {
+      isLooping = enabled;
+      video.loop = isLooping;
+      if (isLooping) {
+        loopBtn.classList.add('btn-active');
+        loopBtn.textContent = '🔁 Loop: ON';
+      } else {
+        loopBtn.classList.remove('btn-active');
+        loopBtn.textContent = '🔁 Loop: OFF';
+      }
+    }
+    loopBtn.addEventListener('click', () => setLoop(!isLooping));
+
     function formatTime(secs) {
       const m = Math.floor(secs / 60).toString().padStart(2, '0');
       const s = Math.floor(secs % 60).toString().padStart(2, '0');
@@ -410,10 +377,9 @@
     const startScrub = () => {
       if (!isVideo) return;
       isScrubbing = true;
-      const cur = videos[activeIdx];
-      wasPlayingBeforeScrub = cur && !cur.paused;
+      wasPlayingBeforeScrub = !video.paused;
       if (wasPlayingBeforeScrub) {
-        cur.pause();
+        video.pause();
         playBtn.textContent = 'Play';
       }
     };
@@ -421,12 +387,10 @@
     const endScrub = () => {
       if (!isScrubbing) return;
       isScrubbing = false;
-      const cur = videos[activeIdx];
-      if (cur && cur.duration) {
-        // Al rilascio garantiamo il frame esatto
-        cur.currentTime = (seekBar.value / 100) * cur.duration;
+      if (video.duration) {
+        video.currentTime = (seekBar.value / 100) * video.duration;
         if (wasPlayingBeforeScrub) {
-          cur.play();
+          video.play();
           playBtn.textContent = 'Pausa';
         }
       }
@@ -438,38 +402,24 @@
     window.addEventListener('touchend', endScrub);
 
     seekBar.addEventListener('input', () => {
-      const cur = videos[activeIdx];
-      if (!cur || !cur.duration) return;
-      const reqTime = (seekBar.value / 100) * cur.duration;
-      timeDisplay.textContent = `${formatTime(reqTime)} / ${formatTime(cur.duration)}`;
+      if (!isVideo || !video.duration) return;
+      const reqTime = (seekBar.value / 100) * video.duration;
+      timeDisplay.textContent = `${formatTime(reqTime)} / ${formatTime(video.duration)}`;
       requestSeek(reqTime);
     });
 
     function togglePlay() {
       if (!isVideo) return;
-      const cur = videos[activeIdx];
-      if (cur.paused) {
-        cur.play();
+      if (video.paused) {
+        video.play();
         playBtn.textContent = 'Pausa';
       } else {
-        cur.pause();
+        video.pause();
         playBtn.textContent = 'Play';
       }
     }
 
     playBtn.addEventListener('click', togglePlay);
-
-    function setLoop(enabled) {
-      isLooping = enabled;
-      if (isLooping) {
-        loopBtn.classList.add('btn-active');
-        loopBtn.textContent = '🔁 Loop: ON';
-      } else {
-        loopBtn.classList.remove('btn-active');
-        loopBtn.textContent = '🔁 Loop: OFF';
-      }
-    }
-    loopBtn.addEventListener('click', () => setLoop(!isLooping));
 
     // Fullscreen
     const fsBtn = document.getElementById('fs-btn');
@@ -486,7 +436,7 @@
       fsBtn.textContent = document.fullscreenElement ? '⛶ Esci Fullscreen' : '⛶ Fullscreen';
     });
 
-    // Mappatura Tasti Rapidi
+    // Hotkeys
     window.addEventListener('keydown', (e) => {
       if (e.key === 'l' || e.key === 'L') {
         setLoop(!isLooping);
@@ -496,16 +446,14 @@
         e.preventDefault();
         togglePlay();
       } else if (e.code === 'ArrowRight' && isVideo) {
-        const cur = videos[activeIdx];
-        if (cur && cur.duration) {
-          const step = e.shiftKey ? 0.033 : 3.0; // Con Shift salta 1 singolo frame (~30fps)
-          requestSeek(Math.min(cur.duration, cur.currentTime + step));
+        if (video.duration) {
+          const step = e.shiftKey ? 0.033 : 3.0; // Con Shift: singolo frame (~30fps)
+          requestSeek(Math.min(video.duration, video.currentTime + step));
         }
       } else if (e.code === 'ArrowLeft' && isVideo) {
-        const cur = videos[activeIdx];
-        if (cur && cur.duration) {
+        if (video.duration) {
           const step = e.shiftKey ? 0.033 : 3.0;
-          requestSeek(Math.max(0, cur.currentTime - step));
+          requestSeek(Math.max(0, video.currentTime - step));
         }
       } else if (e.key === '+' || e.key === '=') {
         setFov(camera.fov - 3);
@@ -524,19 +472,10 @@
     function animate() {
       requestAnimationFrame(animate);
 
-      if (isVideo) {
-        const cur = videos[activeIdx];
-        if (cur && cur.duration) {
-          if (!isScrubbing) {
-            seekBar.value = (cur.currentTime / cur.duration) * 100;
-            timeDisplay.textContent = `${formatTime(cur.currentTime)} / ${formatTime(cur.duration)}`;
-          }
-          if (isLooping && !cur.paused && !isSwapping) {
-            const timeLeft = cur.duration - cur.currentTime;
-            if (timeLeft <= 0.045) {
-              triggerSeamlessSwap();
-            }
-          }
+      if (isVideo && video.duration) {
+        if (!isScrubbing) {
+          seekBar.value = (video.currentTime / video.duration) * 100;
+          timeDisplay.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
         }
       }
 
