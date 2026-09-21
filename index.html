@@ -40,6 +40,7 @@
       border: none; width: 26px; height: 26px; border-radius: 4px;
       cursor: pointer; background: transparent; padding: 0;
     }
+    input[type="checkbox"] { cursor: pointer; }
 
     .btn {
       background: #374151; color: #fff; border: none; padding: 5px 10px;
@@ -114,17 +115,22 @@
       <span id="fov-val" style="min-width: 28px;">75°</span>
     </div>
 
-    <!-- Modifica 1: Altezza Proiezione Y -->
+    <!-- Altezza Proiezione Y -->
     <div class="control-group">
       <label for="proj-y-slider" title="Altezza del punto da cui viene proiettato il video sulla semisfera">Proj Y:</label>
       <input type="range" id="proj-y-slider" min="0" max="200" value="187.3393" step="0.1" style="width: 110px;" />
       <span id="proj-y-val" style="min-width: 55px;">187.3 cm</span>
     </div>
 
-    <!-- Modifica 3: Selettore Colore Sfondo -->
+    <!-- Colore Sfondo & Griglia Sferica -->
     <div class="control-group">
       <label for="bg-color-picker" title="Colore dello sfondo non coperto dalla proiezione">Sfondo:</label>
       <input type="color" id="bg-color-picker" value="#000000" />
+
+      <label style="display: flex; align-items: center; gap: 4px; margin-left: 8px; cursor: pointer;" title="Attiva/disattiva griglia sferica (meridiani e paralleli)">
+        <input type="checkbox" id="grid-toggle" />
+        <span>Griglia</span>
+      </label>
     </div>
   </div>
 
@@ -133,7 +139,7 @@
     <strong>Controlli:</strong><br>
     • Mouse drag: Trascina la sfera<br>
     • Minimappa: Muovi camera (X/Z)<br>
-    • [ R ]: Reset al centro camera<br>
+    • [ R ]: Reset camera al centro<br>
     • Rotella / Slider / [ + / - ]: Zoom<br>
     • [ L ]: Loop ON/OFF<br>
     • [ F ] o Doppio click: Schermo Intero<br>
@@ -156,7 +162,7 @@
     </div>
   </div>
 
-  <!-- Modifica 2: Minimappa Posizione Camera (X e Z) -->
+  <!-- Minimappa Posizione Camera (X e Z) -->
   <div id="minimap-panel" class="ui-panel">
     <canvas id="minimap-canvas" width="140" height="140"></canvas>
     <div class="minimap-info">
@@ -170,13 +176,12 @@
 
   <script>
     // --- 1. SETUP SCENA & CAMERA ---
-    const SPHERE_RADIUS = 600.0; // Sfera di raggio 600cm (diametro 1200cm)
+    const SPHERE_RADIUS = 600.0;
 
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
     
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1.0, 5000);
-    // Camera parte al centro (0, 0, 0)
     camera.position.set(0, 0, 0);
     camera.rotation.order = 'YXZ';
 
@@ -186,13 +191,14 @@
     renderer.setClearColor(0x000000);
     container.appendChild(renderer.domElement);
 
-    // --- 2. SHADER FISHEYE 180° CON PROIEZIONE Y OFF-CENTER E BG COLOR ---
+    // --- 2. SHADER FISHEYE 180° CON GRIGLIA SFERICA PROCEDURALE ---
     const customFisheyeShader = {
       uniforms: {
         map: { value: null },
         hasTexture: { value: 0.0 },
-        projY: { value: 187.3393 }, // Default a +187.3393 cm
-        bgColor: { value: new THREE.Color(0x000000) }
+        projY: { value: 187.3393 },
+        bgColor: { value: new THREE.Color(0x000000) },
+        showGrid: { value: 0.0 } // 0.0 = OFF, 1.0 = ON
       },
       vertexShader: `
         varying vec3 vWorldPosition;
@@ -206,27 +212,58 @@
         uniform float hasTexture;
         uniform float projY;
         uniform vec3 bgColor;
+        uniform float showGrid;
         varying vec3 vWorldPosition;
         const float PI = 3.141592653589793;
+        const float STEP_RAD = 0.17453292519943295; // 10 gradi in radianti
+
+        // Funzione per generare linee di spessore costante ~1px con derivate
+        float getGridLine(float angle, float stepVal) {
+          float hStep = stepVal * 0.5;
+          float d = abs(mod(angle + hStep, stepVal) - hStep);
+          float fw = fwidth(angle);
+          return 1.0 - smoothstep(0.0, fw * 1.25, d);
+        }
+
+        // Calcola il colore di sfondo con l'eventuale griglia sferica (meridiani e paralleli)
+        vec3 computeBackground(vec3 normPos) {
+          vec3 col = bgColor;
+          if (showGrid > 0.5) {
+            float phi = asin(clamp(normPos.y, -1.0, 1.0)); // Latitudine [-PI/2, PI/2]
+            float lambda = atan(normPos.z, normPos.x);      // Longitudine [-PI, PI]
+
+            float latLine = getGridLine(phi, STEP_RAD);     // Paralleli ogni 10°
+            float lonLine = getGridLine(lambda, STEP_RAD);  // Meridiani ogni 10°
+
+            // Dissolvenza dolce dei meridiani al polo per evitare artefatti di convergenza
+            float poleFade = 1.0 - smoothstep(0.96, 0.998, abs(normPos.y));
+            float grid = max(latLine, lonLine * poleFade);
+
+            // Linee bianche sottili miscelate allo sfondo
+            col = mix(col, vec3(1.0), grid * 0.75);
+          }
+          return col;
+        }
 
         void main() {
+          vec3 normWorld = normalize(vWorldPosition);
+
           if (hasTexture < 0.5) {
-            gl_FragColor = vec4(bgColor, 1.0);
+            gl_FragColor = vec4(computeBackground(normWorld), 1.0);
             return;
           }
 
-          // Raggio dal punto di proiezione reale (0, projY, 0) al vertice della sfera
+          // Punto di emissione del proiettore zenitale (0, projY, 0)
           vec3 projCenter = vec3(0.0, projY, 0.0);
           vec3 ray = vWorldPosition - projCenter;
           vec3 dir = normalize(ray);
 
-          // Se il punto si trova sotto l'orizzonte del proiettore zenitale, colora col background
+          // Area fuori dalla semisfera zenitale del proiettore
           if (dir.y < 0.0) {
-            gl_FragColor = vec4(bgColor, 1.0);
+            gl_FragColor = vec4(computeBackground(normWorld), 1.0);
             return;
           }
 
-          // Angolo di apertura rispetto allo zenit
           float theta = acos(clamp(dir.y, 0.0, 1.0));
           float r = theta / (PI * 0.5);
 
@@ -241,7 +278,7 @@
           vec2 uv = vec2(0.5, 0.5) + planeDir * (r * 0.5);
 
           if (r > 1.0) {
-            gl_FragColor = vec4(bgColor, 1.0);
+            gl_FragColor = vec4(computeBackground(normWorld), 1.0);
             return;
           }
 
@@ -255,7 +292,8 @@
       uniforms: customFisheyeShader.uniforms,
       vertexShader: customFisheyeShader.vertexShader,
       fragmentShader: customFisheyeShader.fragmentShader,
-      side: THREE.BackSide
+      side: THREE.BackSide,
+      extensions: { derivatives: true } // Abilita fwidth per linee perfette a 1px
     });
     const domeMesh = new THREE.Mesh(sphereGeo, sphereMat);
     scene.add(domeMesh);
@@ -300,7 +338,7 @@
     fovSlider.addEventListener('input', (e) => setFov(parseFloat(e.target.value)));
     window.addEventListener('wheel', (e) => setFov(camera.fov + (e.deltaY > 0 ? 3 : -3)));
 
-    // --- 5. MODIFICA 1: REGOLAZIONE PROJECTION POINT Y ---
+    // --- 5. ALTEZZA PROIEZIONE Y ---
     const projYSlider = document.getElementById('proj-y-slider');
     const projYVal = document.getElementById('proj-y-val');
 
@@ -310,7 +348,7 @@
       projYVal.textContent = val.toFixed(1) + ' cm';
     });
 
-    // --- 6. MODIFICA 3: SELETTORE COLORE SFONDO ---
+    // --- 6. COLORE SFONDO & CHECKBOX GRIGLIA SFERICA ---
     const bgColorPicker = document.getElementById('bg-color-picker');
     bgColorPicker.addEventListener('input', (e) => {
       const col = new THREE.Color(e.target.value);
@@ -318,23 +356,27 @@
       renderer.setClearColor(col);
     });
 
-    // --- 7. MODIFICA 2: MINIMAPPA POSIZIONE X / Z DELLA CAMERA ---
+    const gridToggle = document.getElementById('grid-toggle');
+    gridToggle.addEventListener('change', (e) => {
+      sphereMat.uniforms.showGrid.value = e.target.checked ? 1.0 : 0.0;
+    });
+
+    // --- 7. MINIMAPPA POSIZIONE X / Z DELLA CAMERA ---
     const mapCanvas = document.getElementById('minimap-canvas');
     const mapCtx = mapCanvas.getContext('2d');
     const camPosDisplay = document.getElementById('cam-pos-display');
     const resetCamBtn = document.getElementById('reset-cam-btn');
 
     let isDraggingMap = false;
-    const mapCenter = 70; // 140 / 2
+    const mapCenter = 70;
     const mapRadiusPx = 62;
-    const cmPerPx = SPHERE_RADIUS / mapRadiusPx; // 600cm / 62px ~ 9.67 cm/px
+    const cmPerPx = SPHERE_RADIUS / mapRadiusPx;
 
     function updateCameraFromMap(clientX, clientY) {
       const rect = mapCanvas.getBoundingClientRect();
       let dx = clientX - (rect.left + mapCenter);
       let dz = clientY - (rect.top + mapCenter);
 
-      // Limita il movimento a 560 cm per non compenetrare il bordo della cupola
       const maxDistancePx = (SPHERE_RADIUS - 40) / cmPerPx;
       const curDist = Math.sqrt(dx * dx + dz * dz);
       if (curDist > maxDistancePx) {
@@ -365,7 +407,7 @@
     function drawMinimap() {
       mapCtx.clearRect(0, 0, 140, 140);
 
-      // Bordo e pavimento della cupola (600 cm)
+      // Pavimento cupola
       mapCtx.beginPath();
       mapCtx.arc(mapCenter, mapCenter, mapRadiusPx, 0, Math.PI * 2);
       mapCtx.fillStyle = 'rgba(25, 25, 25, 0.9)';
@@ -374,7 +416,7 @@
       mapCtx.lineWidth = 1.5;
       mapCtx.stroke();
 
-      // Cerchio di riferimento intermedio (300 cm)
+      // Cerchio 300 cm
       mapCtx.beginPath();
       mapCtx.arc(mapCenter, mapCenter, mapRadiusPx * 0.5, 0, Math.PI * 2);
       mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
@@ -382,7 +424,7 @@
       mapCtx.stroke();
       mapCtx.setLineDash([]);
 
-      // Assi cartesiani centrali
+      // Assi cartesiani
       mapCtx.beginPath();
       mapCtx.moveTo(mapCenter, mapCenter - mapRadiusPx);
       mapCtx.lineTo(mapCenter, mapCenter + mapRadiusPx);
@@ -391,17 +433,16 @@
       mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
       mapCtx.stroke();
 
-      // Posizione Proiettore centrale (indicatore blu fisso)
+      // Proiettore centrale
       mapCtx.beginPath();
       mapCtx.arc(mapCenter, mapCenter, 3, 0, Math.PI * 2);
       mapCtx.fillStyle = '#38bdf8';
       mapCtx.fill();
 
-      // Posizione Camera (pallino verde mobile)
+      // Camera e cono visivo
       const camPxX = mapCenter + (camera.position.x / cmPerPx);
       const camPxZ = mapCenter + (camera.position.z / cmPerPx);
 
-      // Cono visivo indicatore orientamento camera
       const lookDist = 18;
       const angle = -yaw - Math.PI / 2;
       const fovRad = (camera.fov * Math.PI) / 360;
@@ -413,7 +454,6 @@
       mapCtx.fillStyle = 'rgba(250, 204, 21, 0.25)';
       mapCtx.fill();
 
-      // Punto camera
       mapCtx.beginPath();
       mapCtx.arc(camPxX, camPxZ, 4.5, 0, Math.PI * 2);
       mapCtx.fillStyle = '#22c55e';
