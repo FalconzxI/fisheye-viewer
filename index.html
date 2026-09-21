@@ -74,15 +74,6 @@
       transform: translate(-50%, -50%) scale(1.03);
     }
 
-    /* Indicatore di caricamento e buffer */
-    #loader {
-      position: absolute; top: 50%; left: 50%;
-      transform: translate(-50%, -50%);
-      background: rgba(0, 0, 0, 0.8); padding: 14px 24px;
-      border-radius: 8px; border: 1px solid rgba(255,255,255,0.2);
-      font-size: 14px; display: none; z-index: 20; pointer-events: none;
-    }
-
     /* Timeline Video */
     #timeline-panel {
       bottom: 20px; left: 50%; transform: translateX(-50%);
@@ -110,8 +101,6 @@
 </head>
 <body>
 
-  <div id="loader">Caricamento e decodifica stream...</div>
-
   <!-- Barra Superiore -->
   <div id="top-bar" class="ui-panel">
     <div class="control-group">
@@ -128,7 +117,7 @@
 
     <!-- Altezza Proiezione Y -->
     <div class="control-group">
-      <label for="proj-y-slider" title="Altezza del punto di emissione proiettore">Proj Y:</label>
+      <label for="proj-y-slider" title="Altezza del punto di emissione">Proj Y:</label>
       <input type="range" id="proj-y-slider" min="0" max="200" value="187.3393" step="0.1" style="width: 105px;" />
       <span id="proj-y-val" style="min-width: 55px;">187.3 cm</span>
     </div>
@@ -179,7 +168,7 @@
   </div>
 
   <div id="canvas-container"></div>
-  <video id="video-element" playsinline muted preload="auto" crossorigin="anonymous" style="display:none;"></video>
+  <video id="video-element" playsinline muted crossorigin="anonymous" style="display:none;"></video>
 
   <script>
     // --- 1. SETUP BASE THREE.JS ---
@@ -451,52 +440,18 @@
       mapCtx.stroke();
     }
 
-    // --- 7. MOTORE VIDEO AD ALTE PRESTAZIONI CON requestVideoFrameCallback ---
+    // --- 7. MOTORE VIDEO ROBUSTO CON VideoTexture (ZERO RE-ALLOCAZIONI) ---
     const video = document.getElementById('video-element');
-    const loader = document.getElementById('loader');
     let isVideo = false;
     let isLooping = true;
     let isScrubbing = false;
     let wasPlayingBeforeScrub = false;
     let previousBlobUrl = null;
     let videoTexture = null;
-    let targetSeekTime = null;
-    let rvfcHandle = null;
-
-    // Loop sincronizzato al framerate effettivo del video
-    function onVideoFrameCallback() {
-      if (videoTexture) videoTexture.needsUpdate = true;
-      if ('requestVideoFrameCallback' in video) {
-        rvfcHandle = video.requestVideoFrameCallback(onVideoFrameCallback);
-      }
-    }
-
-    video.addEventListener('seeked', () => {
-      if (videoTexture) videoTexture.needsUpdate = true;
-      if (targetSeekTime !== null) applySeek();
-    });
 
     video.addEventListener('ended', () => {
       if (!isLooping) playBtn.textContent = 'Play';
     });
-
-    function applySeek() {
-      if (!isVideo || !video.duration || targetSeekTime === null) return;
-      if (video.seeking) return;
-
-      const nextTime = targetSeekTime;
-      targetSeekTime = null;
-      if (isScrubbing && typeof video.fastSeek === 'function') {
-        video.fastSeek(nextTime);
-      } else {
-        video.currentTime = nextTime;
-      }
-    }
-
-    function requestSeek(time) {
-      targetSeekTime = time;
-      applySeek();
-    }
 
     // Drag & Drop
     const dropZone = document.getElementById('drop-zone');
@@ -526,18 +481,12 @@
     });
 
     function cleanupCurrentMedia() {
-      if (rvfcHandle !== null && 'cancelVideoFrameCallback' in video) {
-        video.cancelVideoFrameCallback(rvfcHandle);
-        rvfcHandle = null;
-      }
       video.pause();
       video.removeAttribute('src');
-      video.load();
       if (videoTexture) {
         videoTexture.dispose();
         videoTexture = null;
       }
-      targetSeekTime = null;
       if (previousBlobUrl) URL.revokeObjectURL(previousBlobUrl);
     }
 
@@ -549,47 +498,29 @@
 
       if (file.type.startsWith('video/')) {
         isVideo = true;
-        loader.style.display = 'block';
+        timelinePanel.style.display = 'flex';
 
         video.src = url;
         video.loop = isLooping;
 
-        // Texture personalizzata: aggiornamento controllato tramite rVFC
-        videoTexture = new THREE.Texture(video);
+        // USA THREE.VideoTexture nativo: alloca la VRAM una volta sola ed evita il collasso GPU!
+        videoTexture = new THREE.VideoTexture(video);
         videoTexture.minFilter = THREE.LinearFilter;
         videoTexture.magFilter = THREE.LinearFilter;
         videoTexture.generateMipmaps = false;
-        videoTexture.format = THREE.RGBAFormat;
 
         sphereMat.uniforms.map.value = videoTexture;
         sphereMat.uniforms.hasTexture.value = 1.0;
 
-        // Attesa del buffer prima del play per evitare stutter iniziale
-        const onCanPlay = () => {
-          loader.style.display = 'none';
-          timelinePanel.style.display = 'flex';
-          
-          if ('requestVideoFrameCallback' in video) {
-            rvfcHandle = video.requestVideoFrameCallback(onVideoFrameCallback);
-          } else {
-            // Fallback Three.js
-            videoTexture.isVideoTexture = true;
-          }
-
-          video.play().then(() => {
-            playBtn.textContent = 'Pausa';
-          }).catch(() => {
-            playBtn.textContent = 'Play';
-          });
-        };
-
-        video.addEventListener('canplay', onCanPlay, { once: true });
-        video.load();
+        video.play().then(() => {
+          playBtn.textContent = 'Pausa';
+        }).catch(() => {
+          playBtn.textContent = 'Play';
+        });
 
       } else {
         isVideo = false;
         timelinePanel.style.display = 'none';
-        loader.style.display = 'none';
 
         const loaderTex = new THREE.TextureLoader();
         loaderTex.load(url, (tex) => {
@@ -601,7 +532,62 @@
       }
     }
 
-    // --- 8. TIMELINE & CONTROLLI ---
+    // --- 8. TIMELINE SCRUBBING PULITO (NON INTASA IL DECODER) ---
+    function formatTime(secs) {
+      const m = Math.floor(secs / 60).toString().padStart(2, '0');
+      const s = Math.floor(secs % 60).toString().padStart(2, '0');
+      return `${m}:${s}`;
+    }
+
+    video.addEventListener('timeupdate', () => {
+      if (!isScrubbing && video.duration) {
+        seekBar.value = (video.currentTime / video.duration) * 100;
+        timeDisplay.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
+      }
+    });
+
+    let scrubRaf = null;
+
+    seekBar.addEventListener('mousedown', () => {
+      if (!isVideo) return;
+      isScrubbing = true;
+      wasPlayingBeforeScrub = !video.paused;
+      video.pause();
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (!isScrubbing) return;
+      isScrubbing = false;
+      if (wasPlayingBeforeScrub) {
+        video.play().catch(() => {});
+        playBtn.textContent = 'Pausa';
+      }
+    });
+
+    seekBar.addEventListener('input', () => {
+      if (!isVideo || !video.duration) return;
+      const reqTime = (seekBar.value / 100) * video.duration;
+      timeDisplay.textContent = `${formatTime(reqTime)} / ${formatTime(video.duration)}`;
+
+      // Limita l'aggiornamento al refresh del monitor senza sovraccaricare la GPU
+      if (scrubRaf) cancelAnimationFrame(scrubRaf);
+      scrubRaf = requestAnimationFrame(() => {
+        video.currentTime = reqTime;
+      });
+    });
+
+    function togglePlay() {
+      if (!isVideo) return;
+      if (video.paused) {
+        video.play().catch(() => {});
+        playBtn.textContent = 'Pausa';
+      } else {
+        video.pause();
+        playBtn.textContent = 'Play';
+      }
+    }
+    playBtn.addEventListener('click', togglePlay);
+
     function setLoop(enabled) {
       isLooping = enabled;
       video.loop = isLooping;
@@ -614,58 +600,6 @@
       }
     }
     loopBtn.addEventListener('click', () => setLoop(!isLooping));
-
-    function formatTime(secs) {
-      const m = Math.floor(secs / 60).toString().padStart(2, '0');
-      const s = Math.floor(secs % 60).toString().padStart(2, '0');
-      return `${m}:${s}`;
-    }
-
-    const startScrub = () => {
-      if (!isVideo) return;
-      isScrubbing = true;
-      wasPlayingBeforeScrub = !video.paused;
-      if (wasPlayingBeforeScrub) {
-        video.pause();
-        playBtn.textContent = 'Play';
-      }
-    };
-
-    const endScrub = () => {
-      if (!isScrubbing) return;
-      isScrubbing = false;
-      if (video.duration) {
-        video.currentTime = (seekBar.value / 100) * video.duration;
-        if (wasPlayingBeforeScrub) {
-          video.play();
-          playBtn.textContent = 'Pausa';
-        }
-      }
-    };
-
-    seekBar.addEventListener('mousedown', startScrub);
-    seekBar.addEventListener('touchstart', startScrub, { passive: true });
-    window.addEventListener('mouseup', endScrub);
-    window.addEventListener('touchend', endScrub);
-
-    seekBar.addEventListener('input', () => {
-      if (!isVideo || !video.duration) return;
-      const reqTime = (seekBar.value / 100) * video.duration;
-      timeDisplay.textContent = `${formatTime(reqTime)} / ${formatTime(video.duration)}`;
-      requestSeek(reqTime);
-    });
-
-    function togglePlay() {
-      if (!isVideo) return;
-      if (video.paused) {
-        video.play();
-        playBtn.textContent = 'Pausa';
-      } else {
-        video.pause();
-        playBtn.textContent = 'Play';
-      }
-    }
-    playBtn.addEventListener('click', togglePlay);
 
     // Fullscreen
     const fsBtn = document.getElementById('fs-btn');
@@ -696,12 +630,12 @@
       } else if (e.code === 'ArrowRight' && isVideo) {
         if (video.duration) {
           const step = e.shiftKey ? 0.033 : 3.0;
-          requestSeek(Math.min(video.duration, video.currentTime + step));
+          video.currentTime = Math.min(video.duration, video.currentTime + step);
         }
       } else if (e.code === 'ArrowLeft' && isVideo) {
         if (video.duration) {
           const step = e.shiftKey ? 0.033 : 3.0;
-          requestSeek(Math.max(0, video.currentTime - step));
+          video.currentTime = Math.max(0, video.currentTime - step);
         }
       } else if (e.key === '+' || e.key === '=') {
         setFov(camera.fov - 3);
@@ -716,17 +650,9 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    // --- 9. RENDER LOOP ---
+    // --- 9. RENDER LOOP LEGGERO ---
     function animate() {
       requestAnimationFrame(animate);
-
-      if (isVideo && video.duration) {
-        if (!isScrubbing) {
-          seekBar.value = (video.currentTime / video.duration) * 100;
-          timeDisplay.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
-        }
-      }
-
       drawMinimap();
       renderer.render(scene, camera);
     }
