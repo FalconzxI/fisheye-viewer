@@ -74,6 +74,15 @@
       transform: translate(-50%, -50%) scale(1.03);
     }
 
+    /* Indicatore di caricamento e buffer */
+    #loader {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.8); padding: 14px 24px;
+      border-radius: 8px; border: 1px solid rgba(255,255,255,0.2);
+      font-size: 14px; display: none; z-index: 20; pointer-events: none;
+    }
+
     /* Timeline Video */
     #timeline-panel {
       bottom: 20px; left: 50%; transform: translateX(-50%);
@@ -82,7 +91,7 @@
     .timeline-row { display: flex; width: 100%; align-items: center; gap: 10px; }
     #seek-bar { flex-grow: 1; }
 
-    /* Minimappa Vista */
+    /* Minimappa */
     #minimap-panel {
       position: absolute; bottom: 20px; left: 20px;
       display: flex; flex-direction: column; align-items: center;
@@ -101,6 +110,8 @@
 </head>
 <body>
 
+  <div id="loader">Caricamento e decodifica stream...</div>
+
   <!-- Barra Superiore -->
   <div id="top-bar" class="ui-panel">
     <div class="control-group">
@@ -117,29 +128,28 @@
 
     <!-- Altezza Proiezione Y -->
     <div class="control-group">
-      <label for="proj-y-slider" title="Altezza del punto da cui viene proiettato il video sulla semisfera">Proj Y:</label>
-      <input type="range" id="proj-y-slider" min="0" max="200" value="187.3393" step="0.1" style="width: 110px;" />
+      <label for="proj-y-slider" title="Altezza del punto di emissione proiettore">Proj Y:</label>
+      <input type="range" id="proj-y-slider" min="0" max="200" value="187.3393" step="0.1" style="width: 105px;" />
       <span id="proj-y-val" style="min-width: 55px;">187.3 cm</span>
     </div>
 
-    <!-- Colore Sfondo & Griglia Sferica -->
+    <!-- Sfondo & Griglia -->
     <div class="control-group">
-      <label for="bg-color-picker" title="Colore dello sfondo non coperto dalla proiezione">Sfondo:</label>
+      <label for="bg-color-picker">Sfondo:</label>
       <input type="color" id="bg-color-picker" value="#000000" />
 
-      <label style="display: flex; align-items: center; gap: 4px; margin-left: 8px; cursor: pointer;" title="Attiva/disattiva griglia sferica (meridiani e paralleli)">
+      <label style="display: flex; align-items: center; gap: 4px; margin-left: 6px; cursor: pointer;">
         <input type="checkbox" id="grid-toggle" />
         <span>Griglia</span>
       </label>
     </div>
   </div>
 
-  <!-- Box Informazioni Controlli -->
   <div id="info-box">
     <strong>Controlli:</strong><br>
     • Mouse drag: Trascina la sfera<br>
-    • Minimappa: Muovi camera (X/Z)<br>
-    • [ R ]: Reset camera al centro<br>
+    • Minimappa: Sposta punto vista (X/Z)<br>
+    • [ R ]: Reset al centro<br>
     • Rotella / Slider / [ + / - ]: Zoom<br>
     • [ L ]: Loop ON/OFF<br>
     • [ F ] o Doppio click: Schermo Intero<br>
@@ -147,13 +157,11 @@
     • Frecce [ ← / → ]: Salta ±3s (Shift: 1 frame)
   </div>
 
-  <!-- Drag & Drop Overlay -->
   <div id="drop-zone">
     <h2>Trascina qui il tuo file</h2>
     <p>Supporta immagini e video MP4/WebM (fino a 4K Square)</p>
   </div>
 
-  <!-- Timeline Video -->
   <div id="timeline-panel" class="ui-panel">
     <div class="timeline-row">
       <button class="btn btn-primary" id="play-btn">Pausa</button>
@@ -162,22 +170,20 @@
     </div>
   </div>
 
-  <!-- Minimappa Posizione Camera (X e Z) -->
   <div id="minimap-panel" class="ui-panel">
     <canvas id="minimap-canvas" width="140" height="140"></canvas>
     <div class="minimap-info">
       <span id="cam-pos-display">X: 0 | Z: 0 cm</span>
-      <button class="btn" id="reset-cam-btn" title="Torna al centro della cupola (Tasto R)">↺ Centro (R)</button>
+      <button class="btn" id="reset-cam-btn">↺ Centro (R)</button>
     </div>
   </div>
 
   <div id="canvas-container"></div>
-  <video id="video-element" playsinline muted crossorigin="anonymous" style="display:none;"></video>
+  <video id="video-element" playsinline muted preload="auto" crossorigin="anonymous" style="display:none;"></video>
 
   <script>
-    // --- 1. SETUP SCENA & CAMERA ---
+    // --- 1. SETUP BASE THREE.JS ---
     const SPHERE_RADIUS = 600.0;
-
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
     
@@ -191,14 +197,14 @@
     renderer.setClearColor(0x000000);
     container.appendChild(renderer.domElement);
 
-    // --- 2. SHADER FISHEYE 180° CON GRIGLIA SFERICA PROCEDURALE ---
+    // --- 2. SHADER FISHEYE 180° ---
     const customFisheyeShader = {
       uniforms: {
         map: { value: null },
         hasTexture: { value: 0.0 },
         projY: { value: 187.3393 },
         bgColor: { value: new THREE.Color(0x000000) },
-        showGrid: { value: 0.0 } // 0.0 = OFF, 1.0 = ON
+        showGrid: { value: 0.0 }
       },
       vertexShader: `
         varying vec3 vWorldPosition;
@@ -215,9 +221,8 @@
         uniform float showGrid;
         varying vec3 vWorldPosition;
         const float PI = 3.141592653589793;
-        const float STEP_RAD = 0.17453292519943295; // 10 gradi in radianti
+        const float STEP_RAD = 0.17453292519943295;
 
-        // Funzione per generare linee di spessore costante ~1px con derivate
         float getGridLine(float angle, float stepVal) {
           float hStep = stepVal * 0.5;
           float d = abs(mod(angle + hStep, stepVal) - hStep);
@@ -225,21 +230,15 @@
           return 1.0 - smoothstep(0.0, fw * 1.25, d);
         }
 
-        // Calcola il colore di sfondo con l'eventuale griglia sferica (meridiani e paralleli)
         vec3 computeBackground(vec3 normPos) {
           vec3 col = bgColor;
           if (showGrid > 0.5) {
-            float phi = asin(clamp(normPos.y, -1.0, 1.0)); // Latitudine [-PI/2, PI/2]
-            float lambda = atan(normPos.z, normPos.x);      // Longitudine [-PI, PI]
-
-            float latLine = getGridLine(phi, STEP_RAD);     // Paralleli ogni 10°
-            float lonLine = getGridLine(lambda, STEP_RAD);  // Meridiani ogni 10°
-
-            // Dissolvenza dolce dei meridiani al polo per evitare artefatti di convergenza
+            float phi = asin(clamp(normPos.y, -1.0, 1.0));
+            float lambda = atan(normPos.z, normPos.x);
+            float latLine = getGridLine(phi, STEP_RAD);
+            float lonLine = getGridLine(lambda, STEP_RAD);
             float poleFade = 1.0 - smoothstep(0.96, 0.998, abs(normPos.y));
             float grid = max(latLine, lonLine * poleFade);
-
-            // Linee bianche sottili miscelate allo sfondo
             col = mix(col, vec3(1.0), grid * 0.75);
           }
           return col;
@@ -253,12 +252,10 @@
             return;
           }
 
-          // Punto di emissione del proiettore zenitale (0, projY, 0)
           vec3 projCenter = vec3(0.0, projY, 0.0);
           vec3 ray = vWorldPosition - projCenter;
           vec3 dir = normalize(ray);
 
-          // Area fuori dalla semisfera zenitale del proiettore
           if (dir.y < 0.0) {
             gl_FragColor = vec4(computeBackground(normWorld), 1.0);
             return;
@@ -293,12 +290,12 @@
       vertexShader: customFisheyeShader.vertexShader,
       fragmentShader: customFisheyeShader.fragmentShader,
       side: THREE.BackSide,
-      extensions: { derivatives: true } // Abilita fwidth per linee perfette a 1px
+      extensions: { derivatives: true }
     });
     const domeMesh = new THREE.Mesh(sphereGeo, sphereMat);
     scene.add(domeMesh);
 
-    // --- 3. CONTROLLI MOUSE (PAN VISTA TRASCINAMENTO SFERA) ---
+    // --- 3. CONTROLLI MOUSE (PAN) ---
     let isDragging = false;
     let prevMouse = { x: 0, y: 0 };
     let yaw = 0;
@@ -338,17 +335,15 @@
     fovSlider.addEventListener('input', (e) => setFov(parseFloat(e.target.value)));
     window.addEventListener('wheel', (e) => setFov(camera.fov + (e.deltaY > 0 ? 3 : -3)));
 
-    // --- 5. ALTEZZA PROIEZIONE Y ---
+    // --- 5. ALTEZZA PROIEZIONE & COLORI ---
     const projYSlider = document.getElementById('proj-y-slider');
     const projYVal = document.getElementById('proj-y-val');
-
     projYSlider.addEventListener('input', (e) => {
       const val = parseFloat(e.target.value);
       sphereMat.uniforms.projY.value = val;
       projYVal.textContent = val.toFixed(1) + ' cm';
     });
 
-    // --- 6. COLORE SFONDO & CHECKBOX GRIGLIA SFERICA ---
     const bgColorPicker = document.getElementById('bg-color-picker');
     bgColorPicker.addEventListener('input', (e) => {
       const col = new THREE.Color(e.target.value);
@@ -361,7 +356,7 @@
       sphereMat.uniforms.showGrid.value = e.target.checked ? 1.0 : 0.0;
     });
 
-    // --- 7. MINIMAPPA POSIZIONE X / Z DELLA CAMERA ---
+    // --- 6. MINIMAPPA ---
     const mapCanvas = document.getElementById('minimap-canvas');
     const mapCtx = mapCanvas.getContext('2d');
     const camPosDisplay = document.getElementById('cam-pos-display');
@@ -377,11 +372,11 @@
       let dx = clientX - (rect.left + mapCenter);
       let dz = clientY - (rect.top + mapCenter);
 
-      const maxDistancePx = (SPHERE_RADIUS - 40) / cmPerPx;
+      const maxDist = (SPHERE_RADIUS - 40) / cmPerPx;
       const curDist = Math.sqrt(dx * dx + dz * dz);
-      if (curDist > maxDistancePx) {
-        dx = (dx / curDist) * maxDistancePx;
-        dz = (dz / curDist) * maxDistancePx;
+      if (curDist > maxDist) {
+        dx = (dx / curDist) * maxDist;
+        dz = (dz / curDist) * maxDist;
       }
 
       camera.position.x = dx * cmPerPx;
@@ -406,8 +401,6 @@
 
     function drawMinimap() {
       mapCtx.clearRect(0, 0, 140, 140);
-
-      // Pavimento cupola
       mapCtx.beginPath();
       mapCtx.arc(mapCenter, mapCenter, mapRadiusPx, 0, Math.PI * 2);
       mapCtx.fillStyle = 'rgba(25, 25, 25, 0.9)';
@@ -416,7 +409,6 @@
       mapCtx.lineWidth = 1.5;
       mapCtx.stroke();
 
-      // Cerchio 300 cm
       mapCtx.beginPath();
       mapCtx.arc(mapCenter, mapCenter, mapRadiusPx * 0.5, 0, Math.PI * 2);
       mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
@@ -424,7 +416,6 @@
       mapCtx.stroke();
       mapCtx.setLineDash([]);
 
-      // Assi cartesiani
       mapCtx.beginPath();
       mapCtx.moveTo(mapCenter, mapCenter - mapRadiusPx);
       mapCtx.lineTo(mapCenter, mapCenter + mapRadiusPx);
@@ -433,16 +424,13 @@
       mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
       mapCtx.stroke();
 
-      // Proiettore centrale
       mapCtx.beginPath();
       mapCtx.arc(mapCenter, mapCenter, 3, 0, Math.PI * 2);
       mapCtx.fillStyle = '#38bdf8';
       mapCtx.fill();
 
-      // Camera e cono visivo
       const camPxX = mapCenter + (camera.position.x / cmPerPx);
       const camPxZ = mapCenter + (camera.position.z / cmPerPx);
-
       const lookDist = 18;
       const angle = -yaw - Math.PI / 2;
       const fovRad = (camera.fov * Math.PI) / 360;
@@ -463,8 +451,9 @@
       mapCtx.stroke();
     }
 
-    // --- 8. MOTORE VIDEO, CARICAMENTO FILE & SEEKING ROBUSTO ---
+    // --- 7. MOTORE VIDEO AD ALTE PRESTAZIONI CON requestVideoFrameCallback ---
     const video = document.getElementById('video-element');
+    const loader = document.getElementById('loader');
     let isVideo = false;
     let isLooping = true;
     let isScrubbing = false;
@@ -472,6 +461,15 @@
     let previousBlobUrl = null;
     let videoTexture = null;
     let targetSeekTime = null;
+    let rvfcHandle = null;
+
+    // Loop sincronizzato al framerate effettivo del video
+    function onVideoFrameCallback() {
+      if (videoTexture) videoTexture.needsUpdate = true;
+      if ('requestVideoFrameCallback' in video) {
+        rvfcHandle = video.requestVideoFrameCallback(onVideoFrameCallback);
+      }
+    }
 
     video.addEventListener('seeked', () => {
       if (videoTexture) videoTexture.needsUpdate = true;
@@ -528,6 +526,10 @@
     });
 
     function cleanupCurrentMedia() {
+      if (rvfcHandle !== null && 'cancelVideoFrameCallback' in video) {
+        video.cancelVideoFrameCallback(rvfcHandle);
+        rvfcHandle = null;
+      }
       video.pause();
       video.removeAttribute('src');
       video.load();
@@ -547,31 +549,50 @@
 
       if (file.type.startsWith('video/')) {
         isVideo = true;
-        timelinePanel.style.display = 'flex';
+        loader.style.display = 'block';
 
         video.src = url;
         video.loop = isLooping;
 
-        videoTexture = new THREE.VideoTexture(video);
+        // Texture personalizzata: aggiornamento controllato tramite rVFC
+        videoTexture = new THREE.Texture(video);
         videoTexture.minFilter = THREE.LinearFilter;
         videoTexture.magFilter = THREE.LinearFilter;
         videoTexture.generateMipmaps = false;
+        videoTexture.format = THREE.RGBAFormat;
 
         sphereMat.uniforms.map.value = videoTexture;
         sphereMat.uniforms.hasTexture.value = 1.0;
 
-        video.play().then(() => {
-          playBtn.textContent = 'Pausa';
-        }).catch(() => {
-          playBtn.textContent = 'Play';
-        });
+        // Attesa del buffer prima del play per evitare stutter iniziale
+        const onCanPlay = () => {
+          loader.style.display = 'none';
+          timelinePanel.style.display = 'flex';
+          
+          if ('requestVideoFrameCallback' in video) {
+            rvfcHandle = video.requestVideoFrameCallback(onVideoFrameCallback);
+          } else {
+            // Fallback Three.js
+            videoTexture.isVideoTexture = true;
+          }
+
+          video.play().then(() => {
+            playBtn.textContent = 'Pausa';
+          }).catch(() => {
+            playBtn.textContent = 'Play';
+          });
+        };
+
+        video.addEventListener('canplay', onCanPlay, { once: true });
+        video.load();
 
       } else {
         isVideo = false;
         timelinePanel.style.display = 'none';
+        loader.style.display = 'none';
 
-        const loader = new THREE.TextureLoader();
-        loader.load(url, (tex) => {
+        const loaderTex = new THREE.TextureLoader();
+        loaderTex.load(url, (tex) => {
           tex.minFilter = THREE.LinearFilter;
           tex.generateMipmaps = false;
           sphereMat.uniforms.map.value = tex;
@@ -580,7 +601,7 @@
       }
     }
 
-    // --- 9. TIMELINE & CONTROLLI ---
+    // --- 8. TIMELINE & CONTROLLI ---
     function setLoop(enabled) {
       isLooping = enabled;
       video.loop = isLooping;
@@ -695,7 +716,7 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    // --- 10. RENDER LOOP ---
+    // --- 9. RENDER LOOP ---
     function animate() {
       requestAnimationFrame(animate);
 
