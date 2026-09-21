@@ -5,36 +5,46 @@
   <title>Zenith Fisheye 180° Viewer</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background-color: #0d0d0d; color: #fff; font-family: sans-serif; overflow: hidden; }
+    body { background-color: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
     #canvas-container { width: 100vw; height: 100vh; display: block; cursor: grab; }
     #canvas-container:active { cursor: grabbing; }
 
-    /* Overlay Controlli */
+    /* Overlay Controlli Superiori */
     .ui-panel {
       position: absolute;
-      background: rgba(20, 20, 20, 0.85);
+      background: rgba(20, 20, 20, 0.88);
       backdrop-filter: blur(8px);
-      padding: 10px 16px;
+      padding: 8px 14px;
       border-radius: 8px;
       z-index: 10;
       font-size: 13px;
       display: flex;
       gap: 12px;
       align-items: center;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      box-shadow: 0 4px 14px rgba(0,0,0,0.6);
+      flex-wrap: wrap;
     }
-    #top-bar { top: 15px; left: 15px; }
-    #timeline-panel {
-      bottom: 20px; left: 50%; transform: translateX(-50%);
-      width: min(800px, 90vw); display: none; flex-direction: column; gap: 8px;
-    }
-    .timeline-row { display: flex; width: 100%; align-items: center; gap: 10px; }
-    input[type="range"] { flex-grow: 1; cursor: pointer; }
+    #top-bar { top: 15px; left: 15px; max-width: calc(100vw - 220px); }
     
+    .control-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border-left: 1px solid rgba(255, 255, 255, 0.15);
+      padding-left: 10px;
+    }
+    .control-group:first-child { border-left: none; padding-left: 0; }
+
+    input[type="range"] { cursor: pointer; }
+    input[type="color"] {
+      border: none; width: 26px; height: 26px; border-radius: 4px;
+      cursor: pointer; background: transparent; padding: 0;
+    }
+
     .btn {
-      background: #374151; color: #fff; border: none; padding: 6px 12px;
-      border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 500;
-      display: flex; align-items: center; gap: 6px; transition: background 0.15s ease;
+      background: #374151; color: #fff; border: none; padding: 5px 10px;
+      border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500;
+      display: flex; align-items: center; gap: 4px; transition: background 0.15s ease;
     }
     .btn:hover { background: #4b5563; }
     .btn-primary { background: #2563eb; }
@@ -43,65 +53,101 @@
 
     #info-box {
       position: absolute; top: 15px; right: 15px;
-      background: rgba(0,0,0,0.6); padding: 10px 14px; border-radius: 6px;
-      font-size: 11px; line-height: 1.5; pointer-events: none;
+      background: rgba(0,0,0,0.65); padding: 10px 14px; border-radius: 6px;
+      font-size: 11px; line-height: 1.5; pointer-events: none; z-index: 10;
     }
 
+    /* Schermata Drag & Drop */
     #drop-zone {
-      position: absolute;
-      top: 50%; left: 50%;
+      position: absolute; top: 50%; left: 50%;
       transform: translate(-50%, -50%);
       border: 2px dashed rgba(255, 255, 255, 0.4);
-      border-radius: 16px;
-      padding: 40px 60px;
-      text-align: center;
-      background: rgba(15, 15, 15, 0.75);
-      backdrop-filter: blur(6px);
-      pointer-events: none;
-      transition: all 0.2s ease;
-      z-index: 5;
+      border-radius: 16px; padding: 40px 60px; text-align: center;
+      background: rgba(15, 15, 15, 0.8); backdrop-filter: blur(6px);
+      pointer-events: none; transition: all 0.2s ease; z-index: 5;
     }
     #drop-zone h2 { font-size: 20px; margin-bottom: 8px; }
     #drop-zone p { font-size: 13px; color: #aaa; }
-    
     body.drag-over #drop-zone {
-      border-color: #3b82f6;
-      background: rgba(37, 99, 235, 0.2);
+      border-color: #3b82f6; background: rgba(37, 99, 235, 0.25);
       transform: translate(-50%, -50%) scale(1.03);
+    }
+
+    /* Timeline Video */
+    #timeline-panel {
+      bottom: 20px; left: 50%; transform: translateX(-50%);
+      width: min(800px, 90vw); display: none; flex-direction: column; gap: 8px;
+    }
+    .timeline-row { display: flex; width: 100%; align-items: center; gap: 10px; }
+    #seek-bar { flex-grow: 1; }
+
+    /* Minimappa Vista */
+    #minimap-panel {
+      position: absolute; bottom: 20px; left: 20px;
+      display: flex; flex-direction: column; align-items: center;
+      gap: 6px; z-index: 10;
+    }
+    #minimap-canvas {
+      width: 140px; height: 140px; border-radius: 50%;
+      background: rgba(20, 20, 20, 0.85); border: 2px solid rgba(255, 255, 255, 0.25);
+      cursor: crosshair; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+    .minimap-info {
+      font-size: 11px; color: #ccc; display: flex; gap: 8px; align-items: center;
     }
   </style>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
 <body>
 
-  <!-- Pannello Superiore -->
+  <!-- Barra Superiore -->
   <div id="top-bar" class="ui-panel">
-    <button class="btn btn-primary" id="fs-btn">⛶ Fullscreen</button>
-    <button class="btn btn-active" id="loop-btn">🔁 Loop: ON</button>
-    
-    <label for="fov-slider" style="margin-left: 6px;">Zoom (FOV):</label>
-    <input type="range" id="fov-slider" min="30" max="110" value="75" step="1" />
-    <span id="fov-val">75°</span>
+    <div class="control-group">
+      <button class="btn btn-primary" id="fs-btn">⛶ Fullscreen</button>
+      <button class="btn btn-active" id="loop-btn">🔁 Loop: ON</button>
+    </div>
+
+    <!-- Zoom FOV -->
+    <div class="control-group">
+      <label for="fov-slider">Zoom:</label>
+      <input type="range" id="fov-slider" min="30" max="110" value="75" step="1" style="width: 80px;" />
+      <span id="fov-val" style="min-width: 28px;">75°</span>
+    </div>
+
+    <!-- Modifica 1: Altezza Proiezione Y -->
+    <div class="control-group">
+      <label for="proj-y-slider" title="Altezza del punto da cui viene proiettato il video sulla semisfera">Proj Y:</label>
+      <input type="range" id="proj-y-slider" min="0" max="200" value="187.3393" step="0.1" style="width: 110px;" />
+      <span id="proj-y-val" style="min-width: 55px;">187.3 cm</span>
+    </div>
+
+    <!-- Modifica 3: Selettore Colore Sfondo -->
+    <div class="control-group">
+      <label for="bg-color-picker" title="Colore dello sfondo non coperto dalla proiezione">Sfondo:</label>
+      <input type="color" id="bg-color-picker" value="#000000" />
+    </div>
   </div>
 
-  <!-- Box Info Controlli -->
+  <!-- Box Informazioni Controlli -->
   <div id="info-box">
     <strong>Controlli:</strong><br>
     • Mouse drag: Trascina la sfera<br>
+    • Minimappa: Muovi camera (X/Z)<br>
+    • [ R ]: Reset al centro camera<br>
     • Rotella / Slider / [ + / - ]: Zoom<br>
     • [ L ]: Loop ON/OFF<br>
     • [ F ] o Doppio click: Schermo Intero<br>
     • Spazio: Play / Pausa<br>
-    • Frecce [ ← / → ]: Salta ±3s (con Shift: 1 frame)
+    • Frecce [ ← / → ]: Salta ±3s (Shift: 1 frame)
   </div>
 
-  <!-- Invito Drag & Drop -->
+  <!-- Drag & Drop Overlay -->
   <div id="drop-zone">
     <h2>Trascina qui il tuo file</h2>
     <p>Supporta immagini e video MP4/WebM (fino a 4K Square)</p>
   </div>
 
-  <!-- Barra Timeline Video -->
+  <!-- Timeline Video -->
   <div id="timeline-panel" class="ui-panel">
     <div class="timeline-row">
       <button class="btn btn-primary" id="play-btn">Pausa</button>
@@ -110,28 +156,43 @@
     </div>
   </div>
 
+  <!-- Modifica 2: Minimappa Posizione Camera (X e Z) -->
+  <div id="minimap-panel" class="ui-panel">
+    <canvas id="minimap-canvas" width="140" height="140"></canvas>
+    <div class="minimap-info">
+      <span id="cam-pos-display">X: 0 | Z: 0 cm</span>
+      <button class="btn" id="reset-cam-btn" title="Torna al centro della cupola (Tasto R)">↺ Centro (R)</button>
+    </div>
+  </div>
+
   <div id="canvas-container"></div>
   <video id="video-element" playsinline muted crossorigin="anonymous" style="display:none;"></video>
 
   <script>
     // --- 1. SETUP SCENA & CAMERA ---
+    const SPHERE_RADIUS = 600.0; // Sfera di raggio 600cm (diametro 1200cm)
+
     const container = document.getElementById('canvas-container');
     const scene = new THREE.Scene();
     
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1.0, 5000);
+    // Camera parte al centro (0, 0, 0)
     camera.position.set(0, 0, 0);
     camera.rotation.order = 'YXZ';
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(0x000000);
     container.appendChild(renderer.domElement);
 
-    // --- 2. SHADER FISHEYE 180° ZENITALE ---
+    // --- 2. SHADER FISHEYE 180° CON PROIEZIONE Y OFF-CENTER E BG COLOR ---
     const customFisheyeShader = {
       uniforms: {
         map: { value: null },
-        hasTexture: { value: 0.0 }
+        hasTexture: { value: 0.0 },
+        projY: { value: 187.3393 }, // Default a +187.3393 cm
+        bgColor: { value: new THREE.Color(0x000000) }
       },
       vertexShader: `
         varying vec3 vWorldPosition;
@@ -143,21 +204,29 @@
       fragmentShader: `
         uniform sampler2D map;
         uniform float hasTexture;
+        uniform float projY;
+        uniform vec3 bgColor;
         varying vec3 vWorldPosition;
         const float PI = 3.141592653589793;
 
         void main() {
           if (hasTexture < 0.5) {
-            gl_FragColor = vec4(0.04, 0.04, 0.04, 1.0);
+            gl_FragColor = vec4(bgColor, 1.0);
             return;
           }
-          vec3 dir = normalize(vWorldPosition);
 
+          // Raggio dal punto di proiezione reale (0, projY, 0) al vertice della sfera
+          vec3 projCenter = vec3(0.0, projY, 0.0);
+          vec3 ray = vWorldPosition - projCenter;
+          vec3 dir = normalize(ray);
+
+          // Se il punto si trova sotto l'orizzonte del proiettore zenitale, colora col background
           if (dir.y < 0.0) {
-            gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+            gl_FragColor = vec4(bgColor, 1.0);
             return;
           }
 
+          // Angolo di apertura rispetto allo zenit
           float theta = acos(clamp(dir.y, 0.0, 1.0));
           float r = theta / (PI * 0.5);
 
@@ -170,12 +239,18 @@
           }
 
           vec2 uv = vec2(0.5, 0.5) + planeDir * (r * 0.5);
+
+          if (r > 1.0) {
+            gl_FragColor = vec4(bgColor, 1.0);
+            return;
+          }
+
           gl_FragColor = texture2D(map, uv);
         }
       `
     };
 
-    const sphereGeo = new THREE.SphereGeometry(100, 64, 64);
+    const sphereGeo = new THREE.SphereGeometry(SPHERE_RADIUS, 128, 64);
     const sphereMat = new THREE.ShaderMaterial({
       uniforms: customFisheyeShader.uniforms,
       vertexShader: customFisheyeShader.vertexShader,
@@ -185,7 +260,7 @@
     const domeMesh = new THREE.Mesh(sphereGeo, sphereMat);
     scene.add(domeMesh);
 
-    // --- 3. CONTROLLI MOUSE (PAN TRASCINAMENTO SFERA) ---
+    // --- 3. CONTROLLI MOUSE (PAN VISTA TRASCINAMENTO SFERA) ---
     let isDragging = false;
     let prevMouse = { x: 0, y: 0 };
     let yaw = 0;
@@ -195,7 +270,6 @@
       isDragging = true;
       prevMouse = { x: e.clientX, y: e.clientY };
     });
-
     window.addEventListener('mouseup', () => { isDragging = false; });
 
     window.addEventListener('mousemove', (e) => {
@@ -207,14 +281,13 @@
       const sens = 0.0025;
       yaw += deltaX * sens;
       pitch += deltaY * sens;
-
       pitch = Math.max(-Math.PI * 0.48, Math.min(Math.PI * 0.48, pitch));
 
       camera.rotation.y = yaw;
       camera.rotation.x = pitch;
     });
 
-    // --- 4. GESTIONE ZOOM (FOV) ---
+    // --- 4. ZOOM (FOV) ---
     const fovSlider = document.getElementById('fov-slider');
     const fovVal = document.getElementById('fov-val');
 
@@ -224,11 +297,133 @@
       fovSlider.value = camera.fov;
       fovVal.textContent = Math.round(camera.fov) + '°';
     }
-
     fovSlider.addEventListener('input', (e) => setFov(parseFloat(e.target.value)));
     window.addEventListener('wheel', (e) => setFov(camera.fov + (e.deltaY > 0 ? 3 : -3)));
 
-    // --- 5. MOTORE VIDEO A SINGOLO LETTORE AD ALTE PRESTAZIONI ---
+    // --- 5. MODIFICA 1: REGOLAZIONE PROJECTION POINT Y ---
+    const projYSlider = document.getElementById('proj-y-slider');
+    const projYVal = document.getElementById('proj-y-val');
+
+    projYSlider.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      sphereMat.uniforms.projY.value = val;
+      projYVal.textContent = val.toFixed(1) + ' cm';
+    });
+
+    // --- 6. MODIFICA 3: SELETTORE COLORE SFONDO ---
+    const bgColorPicker = document.getElementById('bg-color-picker');
+    bgColorPicker.addEventListener('input', (e) => {
+      const col = new THREE.Color(e.target.value);
+      sphereMat.uniforms.bgColor.value.copy(col);
+      renderer.setClearColor(col);
+    });
+
+    // --- 7. MODIFICA 2: MINIMAPPA POSIZIONE X / Z DELLA CAMERA ---
+    const mapCanvas = document.getElementById('minimap-canvas');
+    const mapCtx = mapCanvas.getContext('2d');
+    const camPosDisplay = document.getElementById('cam-pos-display');
+    const resetCamBtn = document.getElementById('reset-cam-btn');
+
+    let isDraggingMap = false;
+    const mapCenter = 70; // 140 / 2
+    const mapRadiusPx = 62;
+    const cmPerPx = SPHERE_RADIUS / mapRadiusPx; // 600cm / 62px ~ 9.67 cm/px
+
+    function updateCameraFromMap(clientX, clientY) {
+      const rect = mapCanvas.getBoundingClientRect();
+      let dx = clientX - (rect.left + mapCenter);
+      let dz = clientY - (rect.top + mapCenter);
+
+      // Limita il movimento a 560 cm per non compenetrare il bordo della cupola
+      const maxDistancePx = (SPHERE_RADIUS - 40) / cmPerPx;
+      const curDist = Math.sqrt(dx * dx + dz * dz);
+      if (curDist > maxDistancePx) {
+        dx = (dx / curDist) * maxDistancePx;
+        dz = (dz / curDist) * maxDistancePx;
+      }
+
+      camera.position.x = dx * cmPerPx;
+      camera.position.z = dz * cmPerPx;
+      camPosDisplay.textContent = `X: ${Math.round(camera.position.x)} | Z: ${Math.round(camera.position.z)} cm`;
+    }
+
+    mapCanvas.addEventListener('mousedown', (e) => {
+      isDraggingMap = true;
+      updateCameraFromMap(e.clientX, e.clientY);
+    });
+    window.addEventListener('mouseup', () => { isDraggingMap = false; });
+    window.addEventListener('mousemove', (e) => {
+      if (isDraggingMap) updateCameraFromMap(e.clientX, e.clientY);
+    });
+
+    function resetCamera() {
+      camera.position.set(0, 0, 0);
+      camPosDisplay.textContent = 'X: 0 | Z: 0 cm';
+    }
+    resetCamBtn.addEventListener('click', resetCamera);
+
+    function drawMinimap() {
+      mapCtx.clearRect(0, 0, 140, 140);
+
+      // Bordo e pavimento della cupola (600 cm)
+      mapCtx.beginPath();
+      mapCtx.arc(mapCenter, mapCenter, mapRadiusPx, 0, Math.PI * 2);
+      mapCtx.fillStyle = 'rgba(25, 25, 25, 0.9)';
+      mapCtx.fill();
+      mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+      mapCtx.lineWidth = 1.5;
+      mapCtx.stroke();
+
+      // Cerchio di riferimento intermedio (300 cm)
+      mapCtx.beginPath();
+      mapCtx.arc(mapCenter, mapCenter, mapRadiusPx * 0.5, 0, Math.PI * 2);
+      mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+      mapCtx.setLineDash([3, 3]);
+      mapCtx.stroke();
+      mapCtx.setLineDash([]);
+
+      // Assi cartesiani centrali
+      mapCtx.beginPath();
+      mapCtx.moveTo(mapCenter, mapCenter - mapRadiusPx);
+      mapCtx.lineTo(mapCenter, mapCenter + mapRadiusPx);
+      mapCtx.moveTo(mapCenter - mapRadiusPx, mapCenter);
+      mapCtx.lineTo(mapCenter + mapRadiusPx, mapCenter);
+      mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      mapCtx.stroke();
+
+      // Posizione Proiettore centrale (indicatore blu fisso)
+      mapCtx.beginPath();
+      mapCtx.arc(mapCenter, mapCenter, 3, 0, Math.PI * 2);
+      mapCtx.fillStyle = '#38bdf8';
+      mapCtx.fill();
+
+      // Posizione Camera (pallino verde mobile)
+      const camPxX = mapCenter + (camera.position.x / cmPerPx);
+      const camPxZ = mapCenter + (camera.position.z / cmPerPx);
+
+      // Cono visivo indicatore orientamento camera
+      const lookDist = 18;
+      const angle = -yaw - Math.PI / 2;
+      const fovRad = (camera.fov * Math.PI) / 360;
+
+      mapCtx.beginPath();
+      mapCtx.moveTo(camPxX, camPxZ);
+      mapCtx.arc(camPxX, camPxZ, lookDist, angle - fovRad, angle + fovRad);
+      mapCtx.closePath();
+      mapCtx.fillStyle = 'rgba(250, 204, 21, 0.25)';
+      mapCtx.fill();
+
+      // Punto camera
+      mapCtx.beginPath();
+      mapCtx.arc(camPxX, camPxZ, 4.5, 0, Math.PI * 2);
+      mapCtx.fillStyle = '#22c55e';
+      mapCtx.fill();
+      mapCtx.strokeStyle = '#ffffff';
+      mapCtx.lineWidth = 1.5;
+      mapCtx.stroke();
+    }
+
+    // --- 8. MOTORE VIDEO, CARICAMENTO FILE & SEEKING ROBUSTO ---
     const video = document.getElementById('video-element');
     let isVideo = false;
     let isLooping = true;
@@ -236,32 +431,23 @@
     let wasPlayingBeforeScrub = false;
     let previousBlobUrl = null;
     let videoTexture = null;
-
-    // Gestione seek senza intasamento (semaforo)
     let targetSeekTime = null;
 
     video.addEventListener('seeked', () => {
-      if (videoTexture) {
-        videoTexture.needsUpdate = true;
-      }
-      if (targetSeekTime !== null) {
-        applySeek();
-      }
+      if (videoTexture) videoTexture.needsUpdate = true;
+      if (targetSeekTime !== null) applySeek();
     });
 
     video.addEventListener('ended', () => {
-      if (!isLooping) {
-        playBtn.textContent = 'Play';
-      }
+      if (!isLooping) playBtn.textContent = 'Play';
     });
 
     function applySeek() {
       if (!isVideo || !video.duration || targetSeekTime === null) return;
-      if (video.seeking) return; // Attende che la GPU abbia finito
+      if (video.seeking) return;
 
       const nextTime = targetSeekTime;
       targetSeekTime = null;
-
       if (isScrubbing && typeof video.fastSeek === 'function') {
         video.fastSeek(nextTime);
       } else {
@@ -274,7 +460,7 @@
       applySeek();
     }
 
-    // --- 6. DRAG & DROP & CARICAMENTO RISORSE ---
+    // Drag & Drop
     const dropZone = document.getElementById('drop-zone');
     const timelinePanel = document.getElementById('timeline-panel');
     const seekBar = document.getElementById('seek-bar');
@@ -354,7 +540,7 @@
       }
     }
 
-    // --- 7. TIMELINE & CONTROLLI ---
+    // --- 9. TIMELINE & CONTROLLI ---
     function setLoop(enabled) {
       isLooping = enabled;
       video.loop = isLooping;
@@ -418,7 +604,6 @@
         playBtn.textContent = 'Play';
       }
     }
-
     playBtn.addEventListener('click', togglePlay);
 
     // Fullscreen
@@ -438,7 +623,9 @@
 
     // Hotkeys
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'l' || e.key === 'L') {
+      if (e.key === 'r' || e.key === 'R') {
+        resetCamera();
+      } else if (e.key === 'l' || e.key === 'L') {
         setLoop(!isLooping);
       } else if (e.key === 'f' || e.key === 'F') {
         toggleFullscreen();
@@ -447,7 +634,7 @@
         togglePlay();
       } else if (e.code === 'ArrowRight' && isVideo) {
         if (video.duration) {
-          const step = e.shiftKey ? 0.033 : 3.0; // Con Shift: singolo frame (~30fps)
+          const step = e.shiftKey ? 0.033 : 3.0;
           requestSeek(Math.min(video.duration, video.currentTime + step));
         }
       } else if (e.code === 'ArrowLeft' && isVideo) {
@@ -468,7 +655,7 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    // --- 8. RENDER LOOP ---
+    // --- 10. RENDER LOOP ---
     function animate() {
       requestAnimationFrame(animate);
 
@@ -479,6 +666,7 @@
         }
       }
 
+      drawMinimap();
       renderer.render(scene, camera);
     }
     animate();
