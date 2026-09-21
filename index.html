@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <title>Zenith Fisheye 180° Viewer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background-color: #0d0d0d; color: #fff; font-family: sans-serif; overflow: hidden; }
+    #canvas-container { width: 100vw; height: 100vh; display: block; cursor: grab; }
+    #canvas-container:active { cursor: grabbing; }
+
+    /* Overlay Controlli */
+    .ui-panel {
+      position: absolute;
+      background: rgba(20, 20, 20, 0.85);
+      backdrop-filter: blur(8px);
+      padding: 12px 16px;
+      border-radius: 8px;
+      z-index: 10;
+      font-size: 13px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    }
+    #top-bar { top: 15px; left: 15px; }
+    #timeline-panel {
+      bottom: 20px; left: 50%; transform: translateX(-50%);
+      width: min(800px, 90vw); display: none; flex-direction: column; gap: 8px;
+    }
+    .timeline-row { display: flex; width: 100%; align-items: center; gap: 10px; }
+    input[type="range"] { flex-grow: 1; cursor: pointer; }
+    input[type="file"] { display: none; }
+    .btn {
+      background: #2563eb; color: #fff; border: none; padding: 6px 12px;
+      border-radius: 4px; cursor: pointer; font-size: 13px;
+    }
+    .btn:hover { background: #1d4ed8; }
+    #info-box {
+      position: absolute; top: 15px; right: 15px;
+      background: rgba(0,0,0,0.6); padding: 10px 14px; border-radius: 6px;
+      font-size: 11px; line-height: 1.5; pointer-events: none;
+    }
+  </style>
+  <!-- Three.js da CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+  <div id="top-bar" class="ui-panel">
+    <label class="btn" for="file-input">Carica File (Immagine/MP4)</label>
+    <input type="file" id="file-input" accept="image/*,video/mp4,video/webm" />
+    
+    <label for="fov-slider">Zoom (FOV):</label>
+    <input type="range" id="fov-slider" min="30" max="110" value="75" step="1" />
+    <span id="fov-val">75°</span>
+  </div>
+
+  <div id="info-box">
+    <strong>Controlli:</strong><br>
+    • Mouse drag: Guarda attorno<br>
+    • Rotella / Slider / [ + / - ]: Zoom<br>
+    • Spazio: Play / Pausa<br>
+    • Frecce [ ← / → ]: Salta -3s / +3s
+  </div>
+
+  <div id="timeline-panel" class="ui-panel">
+    <div class="timeline-row">
+      <button class="btn" id="play-btn">Pausa</button>
+      <input type="range" id="seek-bar" value="0" min="0" max="100" step="0.1" />
+      <span id="time-display">00:00 / 00:00</span>
+    </div>
+  </div>
+
+  <div id="canvas-container"></div>
+  <video id="video-element" playsinline loop crossorigin="anonymous" style="display:none;"></video>
+
+  <script>
+    // --- 1. SETUP SCENA & CAMERA ---
+    const container = document.getElementById('canvas-container');
+    const scene = new THREE.Scene();
+    
+    // Camera posizionata al centro (0, 0, 0)
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 0, 0);
+    camera.rotation.order = 'YXZ';
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    container.appendChild(renderer.domElement);
+
+    // --- 2. SHADER FISHEYE 180° ZENITALE ---
+    // Mappa la proiezione equidistante (r = theta / (pi/2)) sull'emisfero Y >= 0.
+    const customFisheyeShader = {
+      uniforms: {
+        map: { value: null },
+        hasTexture: { value: 0.0 }
+      },
+      vertexShader: `
+        varying vec3 vWorldPosition;
+        void main() {
+          vWorldPosition = position;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D map;
+        uniform float hasTexture;
+        varying vec3 vWorldPosition;
+        const float PI = 3.141592653589793;
+
+        void main() {
+          if (hasTexture < 0.5) {
+            gl_FragColor = vec4(0.05, 0.05, 0.05, 1.0);
+            return;
+          }
+          vec3 dir = normalize(vWorldPosition);
+
+          // Se siamo sotto l'orizzonte (emisfero inferiore), resta nero assoluto
+          if (dir.y < 0.0) {
+            gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+          }
+
+          // Angolo dal polo zenitale (Y = 1): theta varia tra 0 (Zenit) e PI/2 (Orizzonte)
+          float theta = acos(clamp(dir.y, 0.0, 1.0));
+          float r = theta / (PI * 0.5); // Normalizzato tra 0.0 e 1.0
+
+          // Direzione sul piano orizzontale
+          vec2 planeDir = vec2(dir.x, dir.z);
+          float len = length(planeDir);
+          if (len > 0.0001) {
+            planeDir /= len;
+          } else {
+            planeDir = vec2(0.0);
+          }
+
+          // Coordinate texture circolari (centro a 0.5, 0.5 con raggio max 0.5)
+          vec2 uv = vec2(0.5, 0.5) + planeDir * (r * 0.5);
+
+          gl_FragColor = texture2D(map, uv);
+        }
+      `
+    };
+
+    const sphereGeo = new THREE.SphereGeometry(100, 64, 64);
+    const sphereMat = new THREE.ShaderMaterial({
+      uniforms: customFisheyeShader.uniforms,
+      vertexShader: customFisheyeShader.vertexShader,
+      fragmentShader: customFisheyeShader.fragmentShader,
+      side: THREE.BackSide
+    });
+    const domeMesh = new THREE.Mesh(sphereGeo, sphereMat);
+    scene.add(domeMesh);
+
+    // --- 3. CONTROLLI MOUSE (PAN) ---
+    let isDragging = false;
+    let prevMouse = { x: 0, y: 0 };
+    let yaw = 0;
+    let pitch = 0;
+
+    container.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      prevMouse = { x: e.clientX, y: e.clientY };
+    });
+
+    window.addEventListener('mouseup', () => { isDragging = false; });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const deltaX = e.clientX - prevMouse.x;
+      const deltaY = e.clientY - prevMouse.y;
+      prevMouse = { x: e.clientX, y: e.clientY };
+
+      const sens = 0.0025;
+      yaw -= deltaX * sens;
+      pitch -= deltaY * sens;
+
+      // Limita l'alzo per non ribaltare la visuale (da -85° a +85°)
+      pitch = Math.max(-Math.PI * 0.48, Math.min(Math.PI * 0.48, pitch));
+
+      camera.rotation.y = yaw;
+      camera.rotation.x = pitch;
+    });
+
+    // --- 4. GESTIONE ZOOM (FOV) ---
+    const fovSlider = document.getElementById('fov-slider');
+    const fovVal = document.getElementById('fov-val');
+
+    function setFov(val) {
+      camera.fov = Math.max(30, Math.min(110, val));
+      camera.updateProjectionMatrix();
+      fovSlider.value = camera.fov;
+      fovVal.textContent = Math.round(camera.fov) + '°';
+    }
+
+    fovSlider.addEventListener('input', (e) => setFov(parseFloat(e.target.value)));
+
+    window.addEventListener('wheel', (e) => {
+      setFov(camera.fov + (e.deltaY > 0 ? 3 : -3));
+    });
+
+    // --- 5. CARICAMENTO FILE (IMMAGINE / VIDEO) ---
+    const fileInput = document.getElementById('file-input');
+    const video = document.getElementById('video-element');
+    const timelinePanel = document.getElementById('timeline-panel');
+    const seekBar = document.getElementById('seek-bar');
+    const playBtn = document.getElementById('play-btn');
+    const timeDisplay = document.getElementById('time-display');
+    let isVideo = false;
+    let currentTexture = null;
+
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const url = URL.createObjectURL(file);
+
+      if (file.type.startsWith('video/')) {
+        isVideo = true;
+        timelinePanel.style.display = 'flex';
+        video.src = url;
+        video.play();
+        
+        currentTexture = new THREE.VideoTexture(video);
+        currentTexture.minFilter = THREE.LinearFilter;
+        currentTexture.magFilter = THREE.LinearFilter;
+        currentTexture.generateMipmaps = false;
+
+        sphereMat.uniforms.map.value = currentTexture;
+        sphereMat.uniforms.hasTexture.value = 1.0;
+        playBtn.textContent = 'Pausa';
+      } else {
+        isVideo = false;
+        timelinePanel.style.display = 'none';
+        video.pause();
+
+        const loader = new THREE.TextureLoader();
+        loader.load(url, (tex) => {
+          tex.minFilter = THREE.LinearFilter;
+          tex.generateMipmaps = false;
+          sphereMat.uniforms.map.value = tex;
+          sphereMat.uniforms.hasTexture.value = 1.0;
+        });
+      }
+    });
+
+    // --- 6. GESTIONE TIMELINE & HOTKEYS ---
+    function formatTime(secs) {
+      const m = Math.floor(secs / 60).toString().padStart(2, '0');
+      const s = Math.floor(secs % 60).toString().padStart(2, '0');
+      return `${m}:${s}`;
+    }
+
+    video.addEventListener('timeupdate', () => {
+      if (!video.duration) return;
+      seekBar.value = (video.currentTime / video.duration) * 100;
+      timeDisplay.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
+    });
+
+    seekBar.addEventListener('input', () => {
+      if (!video.duration) return;
+      video.currentTime = (seekBar.value / 100) * video.duration;
+    });
+
+    playBtn.addEventListener('click', () => togglePlay());
+
+    function togglePlay() {
+      if (!isVideo) return;
+      if (video.paused) {
+        video.play();
+        playBtn.textContent = 'Pausa';
+      } else {
+        video.pause();
+        playBtn.textContent = 'Play';
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space') {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.code === 'ArrowRight' && isVideo) {
+        video.currentTime = Math.min(video.duration, video.currentTime + 3);
+      } else if (e.code === 'ArrowLeft' && isVideo) {
+        video.currentTime = Math.max(0, video.currentTime - 3);
+      } else if (e.key === '+' || e.key === '=') {
+        setFov(camera.fov - 3);
+      } else if (e.key === '-' || e.key === '_') {
+        setFov(camera.fov + 3);
+      }
+    });
+
+    // Resize
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Render loop
+    function animate() {
+      requestAnimationFrame(animate);
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
