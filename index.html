@@ -120,22 +120,22 @@
     <!-- Zoom FOV -->
     <div class="control-group">
       <label for="fov-slider">Zoom:</label>
-      <input type="range" id="fov-slider" min="30" max="110" value="75" step="1" style="width: 75px;" />
+      <input type="range" id="fov-slider" min="30" max="110" value="75" step="1" style="width: 70px;" />
       <span id="fov-val" style="min-width: 28px;">75°</span>
     </div>
 
     <!-- Altezza Proiezione Y -->
     <div class="control-group">
       <label for="proj-y-slider" title="Altezza del punto di emissione">Proj Y:</label>
-      <input type="range" id="proj-y-slider" min="0" max="200" value="187.3393" step="0.1" style="width: 90px;" />
+      <input type="range" id="proj-y-slider" min="0" max="200" value="187.3393" step="0.1" style="width: 85px;" />
       <span id="proj-y-val" style="min-width: 50px;">187.3 cm</span>
     </div>
 
-    <!-- Curvature Shading (Volume 3D) -->
+    <!-- Volume / Fresnel Shading -->
     <div class="control-group">
-      <label for="curve-slider" title="Regola l'ombreggiatura per evidenziare la curvatura tridimensionale della sfera">Curvatura:</label>
-      <input type="range" id="curve-slider" min="0" max="100" value="0" step="1" style="width: 75px;" />
-      <span id="curve-val" style="min-width: 30px;">0%</span>
+      <label for="fresnel-slider" title="Regola l'effetto Fresnel per dare profondità e concavità volumetrica alla cupola">Volume (Fresnel):</label>
+      <input type="range" id="fresnel-slider" min="0" max="100" value="0" step="1" style="width: 75px;" />
+      <span id="fresnel-val" style="min-width: 30px;">0%</span>
     </div>
 
     <!-- Sfondo & Griglia -->
@@ -155,7 +155,7 @@
     • [ H ]: Mostra / Nascondi HUD<br>
     • Mouse drag: Trascina la sfera<br>
     • Minimappa: Sposta punto vista (X/Z)<br>
-    • [ R ]: Reset al centro<br>
+    • [ R ]: Reset camera al centro<br>
     • Rotella / Slider / [ + / - ]: Zoom<br>
     • [ L ]: Loop ON/OFF<br>
     • [ F ] o Doppio click: Schermo Intero<br>
@@ -203,7 +203,7 @@
     renderer.setClearColor(0x000000);
     container.appendChild(renderer.domElement);
 
-    // --- 2. SHADER FISHEYE 180° CON CURVATURE SHADING ---
+    // --- 2. SHADER FISHEYE 180° CON FRESNEL CONCAVO & PROFONDITÀ DI VOLTA ---
     const customFisheyeShader = {
       uniforms: {
         map: { value: null },
@@ -211,7 +211,8 @@
         projY: { value: 187.3393 },
         bgColor: { value: new THREE.Color(0x000000) },
         showGrid: { value: 0.0 },
-        curvature: { value: 0.0 } // 0.0 (nessuna ombra) a 1.0 (massimo volume)
+        fresnelIntensity: { value: 0.0 }, // 0.0 (nessuna alterazione) a 1.0 (massimo volume)
+        camPos: { value: new THREE.Vector3(0, 0, 0) }
       },
       vertexShader: `
         varying vec3 vWorldPosition;
@@ -226,7 +227,8 @@
         uniform float projY;
         uniform vec3 bgColor;
         uniform float showGrid;
-        uniform float curvature;
+        uniform float fresnelIntensity;
+        uniform vec3 camPos;
         varying vec3 vWorldPosition;
         const float PI = 3.141592653589793;
         const float STEP_RAD = 0.17453292519943295;
@@ -260,10 +262,12 @@
             return;
           }
 
+          // Punto di emissione della proiezione (0, projY, 0)
           vec3 projCenter = vec3(0.0, projY, 0.0);
           vec3 ray = vWorldPosition - projCenter;
           vec3 dir = normalize(ray);
 
+          // Fuori dalla semisfera proiettata
           if (dir.y < 0.0) {
             gl_FragColor = vec4(computeBackground(normWorld), 1.0);
             return;
@@ -289,14 +293,28 @@
 
           vec4 texColor = texture2D(map, uv);
 
-          // Curvature Lighting: luce morbida angolata per scolpire la tridimensionalità della cupola
-          if (curvature > 0.001) {
-            vec3 lightDir = normalize(vec3(0.35, 0.75, 0.45));
-            float NdotL = dot(normWorld, lightDir);
-            // Half-Lambert wrap lighting (da 0.45 a 1.0)
-            float wrapLight = mix(0.45, 1.0, NdotL * 0.5 + 0.5);
-            float shade = mix(1.0, wrapLight, curvature);
-            texColor.rgb *= shade;
+          // MODELLO FRESNEL CONCAVO + VOLTA ARCHITETTONICA
+          if (fresnelIntensity > 0.001) {
+            // Normale interna della superficie
+            vec3 inwardNormal = -normWorld;
+            // Vettore di vista dalla superficie verso la camera
+            vec3 viewDir = normalize(camPos - vWorldPosition);
+
+            // 1. Fresnel radente (N dot V): degrada quando guardi una parete di taglio
+            float NdotV = clamp(dot(inwardNormal, viewDir), 0.0, 1.0);
+
+            // 2. Curvatura della volta: lo zenit (Y=1) resta al 100%, l'orizzonte degrada dolcemente
+            float vaultCurve = pow(clamp(normWorld.y, 0.0, 1.0), 0.45);
+
+            // Sintesi: al centro agisce la volta concava, muovendosi si esalta il Fresnel radente
+            float depthFactor = mix(vaultCurve, NdotV * vaultCurve, 0.4);
+
+            // Shading controllato: scurisce morbidamente fino a un minimo di 0.40
+            float shade = mix(0.40, 1.0, depthFactor);
+
+            // Applica l'intensità impostata dallo slider
+            float finalMultiplier = mix(1.0, shade, fresnelIntensity);
+            texColor.rgb *= finalMultiplier;
           }
 
           gl_FragColor = texColor;
@@ -355,7 +373,7 @@
     fovSlider.addEventListener('input', (e) => setFov(parseFloat(e.target.value)));
     window.addEventListener('wheel', (e) => setFov(camera.fov + (e.deltaY > 0 ? 3 : -3)));
 
-    // --- 5. ALTEZZA PROIEZIONE, CURVATURA & COLORI ---
+    // --- 5. ALTEZZA PROIEZIONE, FRESNEL VOLUME & COLORI ---
     const projYSlider = document.getElementById('proj-y-slider');
     const projYVal = document.getElementById('proj-y-val');
     projYSlider.addEventListener('input', (e) => {
@@ -364,12 +382,12 @@
       projYVal.textContent = val.toFixed(1) + ' cm';
     });
 
-    const curveSlider = document.getElementById('curve-slider');
-    const curveVal = document.getElementById('curve-val');
-    curveSlider.addEventListener('input', (e) => {
+    const fresnelSlider = document.getElementById('fresnel-slider');
+    const fresnelVal = document.getElementById('fresnel-val');
+    fresnelSlider.addEventListener('input', (e) => {
       const val = parseFloat(e.target.value);
-      sphereMat.uniforms.curvature.value = val / 100.0;
-      curveVal.textContent = val + '%';
+      sphereMat.uniforms.fresnelIntensity.value = val / 100.0;
+      fresnelVal.textContent = val + '%';
     });
 
     const bgColorPicker = document.getElementById('bg-color-picker');
@@ -683,7 +701,7 @@
           const step = e.shiftKey ? 0.033 : 3.0;
           video.currentTime = Math.max(0, video.currentTime - step);
         }
-      } else if (e.key === '+' || e.key === '_') {
+      } else if (e.key === '+' || e.key === '=') {
         setFov(camera.fov - 3);
       } else if (e.key === '-' || e.key === '_') {
         setFov(camera.fov + 3);
@@ -699,6 +717,10 @@
     // --- 9. RENDER LOOP LEGGERO ---
     function animate() {
       requestAnimationFrame(animate);
+
+      // Aggiorna la posizione della camera nello shader per il calcolo Fresnel dinamico
+      sphereMat.uniforms.camPos.value.copy(camera.position);
+
       if (hudVisible) {
         drawMinimap();
       }
