@@ -96,6 +96,15 @@
     .minimap-info {
       font-size: 11px; color: #ccc; display: flex; gap: 8px; align-items: center;
     }
+
+    /* Tasto H: Nascondi HUD */
+    body.hide-hud .ui-panel,
+    body.hide-hud #info-box,
+    body.hide-hud #minimap-panel,
+    body.hide-hud #timeline-panel,
+    body.hide-hud #drop-zone {
+      display: none !important;
+    }
   </style>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 </head>
@@ -111,15 +120,22 @@
     <!-- Zoom FOV -->
     <div class="control-group">
       <label for="fov-slider">Zoom:</label>
-      <input type="range" id="fov-slider" min="30" max="110" value="75" step="1" style="width: 80px;" />
+      <input type="range" id="fov-slider" min="30" max="110" value="75" step="1" style="width: 75px;" />
       <span id="fov-val" style="min-width: 28px;">75°</span>
     </div>
 
     <!-- Altezza Proiezione Y -->
     <div class="control-group">
       <label for="proj-y-slider" title="Altezza del punto di emissione">Proj Y:</label>
-      <input type="range" id="proj-y-slider" min="0" max="200" value="187.3393" step="0.1" style="width: 105px;" />
-      <span id="proj-y-val" style="min-width: 55px;">187.3 cm</span>
+      <input type="range" id="proj-y-slider" min="0" max="200" value="187.3393" step="0.1" style="width: 90px;" />
+      <span id="proj-y-val" style="min-width: 50px;">187.3 cm</span>
+    </div>
+
+    <!-- Curvature Shading (Volume 3D) -->
+    <div class="control-group">
+      <label for="curve-slider" title="Regola l'ombreggiatura per evidenziare la curvatura tridimensionale della sfera">Curvatura:</label>
+      <input type="range" id="curve-slider" min="0" max="100" value="0" step="1" style="width: 75px;" />
+      <span id="curve-val" style="min-width: 30px;">0%</span>
     </div>
 
     <!-- Sfondo & Griglia -->
@@ -136,6 +152,7 @@
 
   <div id="info-box">
     <strong>Controlli:</strong><br>
+    • [ H ]: Mostra / Nascondi HUD<br>
     • Mouse drag: Trascina la sfera<br>
     • Minimappa: Sposta punto vista (X/Z)<br>
     • [ R ]: Reset al centro<br>
@@ -186,14 +203,15 @@
     renderer.setClearColor(0x000000);
     container.appendChild(renderer.domElement);
 
-    // --- 2. SHADER FISHEYE 180° ---
+    // --- 2. SHADER FISHEYE 180° CON CURVATURE SHADING ---
     const customFisheyeShader = {
       uniforms: {
         map: { value: null },
         hasTexture: { value: 0.0 },
         projY: { value: 187.3393 },
         bgColor: { value: new THREE.Color(0x000000) },
-        showGrid: { value: 0.0 }
+        showGrid: { value: 0.0 },
+        curvature: { value: 0.0 } // 0.0 (nessuna ombra) a 1.0 (massimo volume)
       },
       vertexShader: `
         varying vec3 vWorldPosition;
@@ -208,6 +226,7 @@
         uniform float projY;
         uniform vec3 bgColor;
         uniform float showGrid;
+        uniform float curvature;
         varying vec3 vWorldPosition;
         const float PI = 3.141592653589793;
         const float STEP_RAD = 0.17453292519943295;
@@ -268,7 +287,19 @@
             return;
           }
 
-          gl_FragColor = texture2D(map, uv);
+          vec4 texColor = texture2D(map, uv);
+
+          // Curvature Lighting: luce morbida angolata per scolpire la tridimensionalità della cupola
+          if (curvature > 0.001) {
+            vec3 lightDir = normalize(vec3(0.35, 0.75, 0.45));
+            float NdotL = dot(normWorld, lightDir);
+            // Half-Lambert wrap lighting (da 0.45 a 1.0)
+            float wrapLight = mix(0.45, 1.0, NdotL * 0.5 + 0.5);
+            float shade = mix(1.0, wrapLight, curvature);
+            texColor.rgb *= shade;
+          }
+
+          gl_FragColor = texColor;
         }
       `
     };
@@ -324,13 +355,21 @@
     fovSlider.addEventListener('input', (e) => setFov(parseFloat(e.target.value)));
     window.addEventListener('wheel', (e) => setFov(camera.fov + (e.deltaY > 0 ? 3 : -3)));
 
-    // --- 5. ALTEZZA PROIEZIONE & COLORI ---
+    // --- 5. ALTEZZA PROIEZIONE, CURVATURA & COLORI ---
     const projYSlider = document.getElementById('proj-y-slider');
     const projYVal = document.getElementById('proj-y-val');
     projYSlider.addEventListener('input', (e) => {
       const val = parseFloat(e.target.value);
       sphereMat.uniforms.projY.value = val;
       projYVal.textContent = val.toFixed(1) + ' cm';
+    });
+
+    const curveSlider = document.getElementById('curve-slider');
+    const curveVal = document.getElementById('curve-val');
+    curveSlider.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      sphereMat.uniforms.curvature.value = val / 100.0;
+      curveVal.textContent = val + '%';
     });
 
     const bgColorPicker = document.getElementById('bg-color-picker');
@@ -440,7 +479,7 @@
       mapCtx.stroke();
     }
 
-    // --- 7. MOTORE VIDEO ROBUSTO CON VideoTexture (ZERO RE-ALLOCAZIONI) ---
+    // --- 7. MOTORE VIDEO ROBUSTO CON VideoTexture ---
     const video = document.getElementById('video-element');
     let isVideo = false;
     let isLooping = true;
@@ -503,7 +542,6 @@
         video.src = url;
         video.loop = isLooping;
 
-        // USA THREE.VideoTexture nativo: alloca la VRAM una volta sola ed evita il collasso GPU!
         videoTexture = new THREE.VideoTexture(video);
         videoTexture.minFilter = THREE.LinearFilter;
         videoTexture.magFilter = THREE.LinearFilter;
@@ -532,7 +570,7 @@
       }
     }
 
-    // --- 8. TIMELINE SCRUBBING PULITO (NON INTASA IL DECODER) ---
+    // --- 8. TIMELINE SCRUBBING FLUIDO ---
     function formatTime(secs) {
       const m = Math.floor(secs / 60).toString().padStart(2, '0');
       const s = Math.floor(secs % 60).toString().padStart(2, '0');
@@ -569,7 +607,6 @@
       const reqTime = (seekBar.value / 100) * video.duration;
       timeDisplay.textContent = `${formatTime(reqTime)} / ${formatTime(video.duration)}`;
 
-      // Limita l'aggiornamento al refresh del monitor senza sovraccaricare la GPU
       if (scrubRaf) cancelAnimationFrame(scrubRaf);
       scrubRaf = requestAnimationFrame(() => {
         video.currentTime = reqTime;
@@ -616,9 +653,18 @@
       fsBtn.textContent = document.fullscreenElement ? '⛶ Esci Fullscreen' : '⛶ Fullscreen';
     });
 
+    // Toggle Visibilità HUD (Tasto H)
+    let hudVisible = true;
+    function toggleHUD() {
+      hudVisible = !hudVisible;
+      document.body.classList.toggle('hide-hud', !hudVisible);
+    }
+
     // Hotkeys
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'r' || e.key === 'R') {
+      if (e.key === 'h' || e.key === 'H') {
+        toggleHUD();
+      } else if (e.key === 'r' || e.key === 'R') {
         resetCamera();
       } else if (e.key === 'l' || e.key === 'L') {
         setLoop(!isLooping);
@@ -637,7 +683,7 @@
           const step = e.shiftKey ? 0.033 : 3.0;
           video.currentTime = Math.max(0, video.currentTime - step);
         }
-      } else if (e.key === '+' || e.key === '=') {
+      } else if (e.key === '+' || e.key === '_') {
         setFov(camera.fov - 3);
       } else if (e.key === '-' || e.key === '_') {
         setFov(camera.fov + 3);
@@ -653,7 +699,9 @@
     // --- 9. RENDER LOOP LEGGERO ---
     function animate() {
       requestAnimationFrame(animate);
-      drawMinimap();
+      if (hudVisible) {
+        drawMinimap();
+      }
       renderer.render(scene, camera);
     }
     animate();
