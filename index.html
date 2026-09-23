@@ -36,6 +36,7 @@
     .control-group:first-child { border-left: none; padding-left: 0; }
 
     input[type="range"] { cursor: pointer; }
+    input[type="range"]:disabled { opacity: 0.3; cursor: not-allowed; }
     input[type="color"] {
       border: none; width: 26px; height: 26px; border-radius: 4px;
       cursor: pointer; background: transparent; padding: 0;
@@ -131,11 +132,15 @@
       <span id="proj-y-val" style="min-width: 50px;">187.3 cm</span>
     </div>
 
-    <!-- Volume / Fresnel Shading -->
+    <!-- Mappa Ambient Occlusion (AO) -->
     <div class="control-group">
-      <label for="fresnel-slider" title="Regola l'effetto Fresnel per dare profondità e concavità volumetrica alla cupola">Volume (Fresnel):</label>
-      <input type="range" id="fresnel-slider" min="0" max="100" value="0" step="1" style="width: 75px;" />
-      <span id="fresnel-val" style="min-width: 30px;">0%</span>
+      <button class="btn" id="ao-btn" title="Carica una texture Ambient Occlusion (PNG/JPG)">+ Mappa AO</button>
+      <input type="file" id="ao-input" accept="image/*" style="display:none;" />
+      
+      <label for="ao-slider" title="Intensità della moltiplicazione Ambient Occlusion">AO Mult:</label>
+      <input type="range" id="ao-slider" min="0" max="100" value="100" step="1" style="width: 70px;" disabled />
+      <span id="ao-val" style="min-width: 32px; color: #888;">OFF</span>
+      <button class="btn" id="ao-clear-btn" style="display:none; padding: 4px 6px;" title="Rimuovi mappa AO">✕</button>
     </div>
 
     <!-- Sfondo & Griglia -->
@@ -164,7 +169,7 @@
   </div>
 
   <div id="drop-zone">
-    <h2>Trascina qui il tuo file</h2>
+    <h2>Trascina qui il tuo file principale</h2>
     <p>Supporta immagini e video MP4/WebM (fino a 4K Square)</p>
   </div>
 
@@ -203,7 +208,7 @@
     renderer.setClearColor(0x000000);
     container.appendChild(renderer.domElement);
 
-    // --- 2. SHADER FISHEYE 180° CON FRESNEL CONCAVO & PROFONDITÀ DI VOLTA ---
+    // --- 2. SHADER FISHEYE 180° CON AMBIENT OCCLUSION MULTIPLY MAP ---
     const customFisheyeShader = {
       uniforms: {
         map: { value: null },
@@ -211,8 +216,9 @@
         projY: { value: 187.3393 },
         bgColor: { value: new THREE.Color(0x000000) },
         showGrid: { value: 0.0 },
-        fresnelIntensity: { value: 0.0 }, // 0.0 (nessuna alterazione) a 1.0 (massimo volume)
-        camPos: { value: new THREE.Vector3(0, 0, 0) }
+        aoMap: { value: null },
+        hasAoMap: { value: 0.0 },
+        aoIntensity: { value: 1.0 }
       },
       vertexShader: `
         varying vec3 vWorldPosition;
@@ -227,8 +233,11 @@
         uniform float projY;
         uniform vec3 bgColor;
         uniform float showGrid;
-        uniform float fresnelIntensity;
-        uniform vec3 camPos;
+
+        uniform sampler2D aoMap;
+        uniform float hasAoMap;
+        uniform float aoIntensity;
+
         varying vec3 vWorldPosition;
         const float PI = 3.141592653589793;
         const float STEP_RAD = 0.17453292519943295;
@@ -293,28 +302,11 @@
 
           vec4 texColor = texture2D(map, uv);
 
-          // MODELLO FRESNEL CONCAVO + VOLTA ARCHITETTONICA
-          if (fresnelIntensity > 0.001) {
-            // Normale interna della superficie
-            vec3 inwardNormal = -normWorld;
-            // Vettore di vista dalla superficie verso la camera
-            vec3 viewDir = normalize(camPos - vWorldPosition);
-
-            // 1. Fresnel radente (N dot V): degrada quando guardi una parete di taglio
-            float NdotV = clamp(dot(inwardNormal, viewDir), 0.0, 1.0);
-
-            // 2. Curvatura della volta: lo zenit (Y=1) resta al 100%, l'orizzonte degrada dolcemente
-            float vaultCurve = pow(clamp(normWorld.y, 0.0, 1.0), 0.45);
-
-            // Sintesi: al centro agisce la volta concava, muovendosi si esalta il Fresnel radente
-            float depthFactor = mix(vaultCurve, NdotV * vaultCurve, 0.4);
-
-            // Shading controllato: scurisce morbidamente fino a un minimo di 0.40
-            float shade = mix(0.40, 1.0, depthFactor);
-
-            // Applica l'intensità impostata dallo slider
-            float finalMultiplier = mix(1.0, shade, fresnelIntensity);
-            texColor.rgb *= finalMultiplier;
+          // Applicazione Ambient Occlusion tramite Multiply Blend
+          if (hasAoMap > 0.5) {
+            vec4 aoColor = texture2D(aoMap, uv);
+            vec3 aoMult = mix(vec3(1.0), aoColor.rgb, aoIntensity);
+            texColor.rgb *= aoMult;
           }
 
           gl_FragColor = texColor;
@@ -373,7 +365,7 @@
     fovSlider.addEventListener('input', (e) => setFov(parseFloat(e.target.value)));
     window.addEventListener('wheel', (e) => setFov(camera.fov + (e.deltaY > 0 ? 3 : -3)));
 
-    // --- 5. ALTEZZA PROIEZIONE, FRESNEL VOLUME & COLORI ---
+    // --- 5. ALTEZZA PROIEZIONE & GESTIONE MAPPA AO ---
     const projYSlider = document.getElementById('proj-y-slider');
     const projYVal = document.getElementById('proj-y-val');
     projYSlider.addEventListener('input', (e) => {
@@ -382,14 +374,65 @@
       projYVal.textContent = val.toFixed(1) + ' cm';
     });
 
-    const fresnelSlider = document.getElementById('fresnel-slider');
-    const fresnelVal = document.getElementById('fresnel-val');
-    fresnelSlider.addEventListener('input', (e) => {
-      const val = parseFloat(e.target.value);
-      sphereMat.uniforms.fresnelIntensity.value = val / 100.0;
-      fresnelVal.textContent = val + '%';
+    // Controlli Mappa AO
+    const aoBtn = document.getElementById('ao-btn');
+    const aoInput = document.getElementById('ao-input');
+    const aoSlider = document.getElementById('ao-slider');
+    const aoVal = document.getElementById('ao-val');
+    const aoClearBtn = document.getElementById('ao-clear-btn');
+    let currentAoTexture = null;
+
+    aoBtn.addEventListener('click', () => aoInput.click());
+
+    aoInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const url = URL.createObjectURL(file);
+      const loader = new THREE.TextureLoader();
+      loader.load(url, (tex) => {
+        if (currentAoTexture) currentAoTexture.dispose();
+        currentAoTexture = tex;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.generateMipmaps = false;
+
+        sphereMat.uniforms.aoMap.value = tex;
+        sphereMat.uniforms.hasAoMap.value = 1.0;
+
+        aoSlider.disabled = false;
+        aoSlider.value = 100;
+        sphereMat.uniforms.aoIntensity.value = 1.0;
+        aoVal.textContent = '100%';
+        aoVal.style.color = '#fff';
+        aoClearBtn.style.display = 'inline-flex';
+        aoBtn.textContent = '✓ AO Attiva';
+      });
     });
 
+    aoSlider.addEventListener('input', (e) => {
+      const val = parseFloat(e.target.value);
+      sphereMat.uniforms.aoIntensity.value = val / 100.0;
+      aoVal.textContent = val + '%';
+    });
+
+    aoClearBtn.addEventListener('click', () => {
+      if (currentAoTexture) {
+        currentAoTexture.dispose();
+        currentAoTexture = null;
+      }
+      sphereMat.uniforms.aoMap.value = null;
+      sphereMat.uniforms.hasAoMap.value = 0.0;
+      aoSlider.disabled = true;
+      aoSlider.value = 0;
+      aoVal.textContent = 'OFF';
+      aoVal.style.color = '#888';
+      aoClearBtn.style.display = 'none';
+      aoBtn.textContent = '+ Mappa AO';
+      aoInput.value = '';
+    });
+
+    // Colori e Griglia
     const bgColorPicker = document.getElementById('bg-color-picker');
     bgColorPicker.addEventListener('input', (e) => {
       const col = new THREE.Color(e.target.value);
@@ -510,7 +553,7 @@
       if (!isLooping) playBtn.textContent = 'Play';
     });
 
-    // Drag & Drop
+    // Drag & Drop File Principale
     const dropZone = document.getElementById('drop-zone');
     const timelinePanel = document.getElementById('timeline-panel');
     const seekBar = document.getElementById('seek-bar');
@@ -717,10 +760,6 @@
     // --- 9. RENDER LOOP LEGGERO ---
     function animate() {
       requestAnimationFrame(animate);
-
-      // Aggiorna la posizione della camera nello shader per il calcolo Fresnel dinamico
-      sphereMat.uniforms.camPos.value.copy(camera.position);
-
       if (hudVisible) {
         drawMinimap();
       }
