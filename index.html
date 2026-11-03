@@ -75,13 +75,26 @@
       transform: translate(-50%, -50%) scale(1.03);
     }
 
-    /* Timeline Video */
+    /* Timeline Video & Audio */
     #timeline-panel {
       bottom: 20px; left: 50%; transform: translateX(-50%);
-      width: min(800px, 90vw); display: none; flex-direction: column; gap: 8px;
+      width: min(850px, 92vw); display: none; flex-direction: column; gap: 8px;
     }
     .timeline-row { display: flex; width: 100%; align-items: center; gap: 10px; }
     #seek-bar { flex-grow: 1; }
+
+    .volume-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border-left: 1px solid rgba(255, 255, 255, 0.2);
+      padding-left: 10px;
+    }
+    #mute-btn {
+      background: transparent; border: none; font-size: 16px; cursor: pointer;
+      padding: 2px 4px; border-radius: 4px; display: flex; align-items: center; justify-content: center;
+    }
+    #mute-btn:hover { background: rgba(255,255,255,0.1); }
 
     /* Minimappa */
     #minimap-panel {
@@ -158,14 +171,15 @@
   <div id="info-box">
     <strong>Controlli:</strong><br>
     • [ H ]: Mostra / Nascondi HUD<br>
+    • [ M ]: Muto / Riattiva Audio<br>
+    • Spazio: Play / Pausa<br>
+    • Frecce [ ← / → ]: Salta ±3s (Shift: 1 frame)<br>
     • Mouse drag: Trascina la sfera<br>
     • Minimappa: Sposta punto vista (X/Z)<br>
     • [ R ]: Reset camera al centro<br>
     • Rotella / Slider / [ + / - ]: Zoom<br>
     • [ L ]: Loop ON/OFF<br>
-    • [ F ] o Doppio click: Schermo Intero<br>
-    • Spazio: Play / Pausa<br>
-    • Frecce [ ← / → ]: Salta ±3s (Shift: 1 frame)
+    • [ F ] o Doppio click: Schermo Intero
   </div>
 
   <div id="drop-zone">
@@ -173,11 +187,18 @@
     <p>Supporta immagini e video MP4/WebM (fino a 4K Square)</p>
   </div>
 
+  <!-- Barra Timeline & Audio -->
   <div id="timeline-panel" class="ui-panel">
     <div class="timeline-row">
       <button class="btn btn-primary" id="play-btn">Pausa</button>
       <input type="range" id="seek-bar" value="0" min="0" max="100" step="0.05" />
       <span id="time-display">00:00 / 00:00</span>
+
+      <!-- Controlli Volume e Mute -->
+      <div class="volume-group">
+        <button id="mute-btn" title="Muto / Riattiva audio (Tasto M)">🔊</button>
+        <input type="range" id="vol-slider" min="0" max="100" value="100" step="1" title="Volume" style="width: 70px;" />
+      </div>
     </div>
   </div>
 
@@ -190,7 +211,7 @@
   </div>
 
   <div id="canvas-container"></div>
-  <video id="video-element" playsinline muted crossorigin="anonymous" style="display:none;"></video>
+  <video id="video-element" playsinline crossorigin="anonymous" style="display:none;"></video>
 
   <script>
     // --- 1. SETUP BASE THREE.JS ---
@@ -271,12 +292,10 @@
             return;
           }
 
-          // Punto di emissione della proiezione (0, projY, 0)
           vec3 projCenter = vec3(0.0, projY, 0.0);
           vec3 ray = vWorldPosition - projCenter;
           vec3 dir = normalize(ray);
 
-          // Fuori dalla semisfera proiettata
           if (dir.y < 0.0) {
             gl_FragColor = vec4(computeBackground(normWorld), 1.0);
             return;
@@ -302,7 +321,6 @@
 
           vec4 texColor = texture2D(map, uv);
 
-          // Applicazione Ambient Occlusion tramite Multiply Blend
           if (hasAoMap > 0.5) {
             vec4 aoColor = texture2D(aoMap, uv);
             vec3 aoMult = mix(vec3(1.0), aoColor.rgb, aoIntensity);
@@ -374,7 +392,6 @@
       projYVal.textContent = val.toFixed(1) + ' cm';
     });
 
-    // Controlli Mappa AO
     const aoBtn = document.getElementById('ao-btn');
     const aoInput = document.getElementById('ao-input');
     const aoSlider = document.getElementById('ao-slider');
@@ -540,7 +557,7 @@
       mapCtx.stroke();
     }
 
-    // --- 7. MOTORE VIDEO ROBUSTO CON VideoTexture ---
+    // --- 7. MOTORE VIDEO ROBUSTO CON SUPPORTO AUDIO ---
     const video = document.getElementById('video-element');
     let isVideo = false;
     let isLooping = true;
@@ -548,6 +565,54 @@
     let wasPlayingBeforeScrub = false;
     let previousBlobUrl = null;
     let videoTexture = null;
+
+    // Gestione Volume & Mute
+    const muteBtn = document.getElementById('mute-btn');
+    const volSlider = document.getElementById('vol-slider');
+    let savedVolume = 1.0;
+
+    function updateVolumeUI() {
+      const volPercent = Math.round(video.volume * 100);
+      volSlider.value = video.muted ? 0 : volPercent;
+
+      if (video.muted || video.volume === 0) {
+        muteBtn.textContent = '🔇';
+      } else if (video.volume < 0.35) {
+        muteBtn.textContent = '🔈';
+      } else if (video.volume < 0.65) {
+        muteBtn.textContent = '🔉';
+      } else {
+        muteBtn.textContent = '🔊';
+      }
+    }
+
+    function toggleMute() {
+      if (!isVideo) return;
+      if (video.muted) {
+        video.muted = false;
+        if (video.volume === 0) {
+          video.volume = savedVolume > 0 ? savedVolume : 1.0;
+        }
+      } else {
+        savedVolume = video.volume;
+        video.muted = true;
+      }
+      updateVolumeUI();
+    }
+
+    muteBtn.addEventListener('click', toggleMute);
+
+    volSlider.addEventListener('input', () => {
+      const val = parseFloat(volSlider.value) / 100;
+      video.volume = val;
+      if (val > 0) {
+        video.muted = false;
+        savedVolume = val;
+      } else {
+        video.muted = true;
+      }
+      updateVolumeUI();
+    });
 
     video.addEventListener('ended', () => {
       if (!isLooping) playBtn.textContent = 'Play';
@@ -603,6 +668,11 @@
         video.src = url;
         video.loop = isLooping;
 
+        // Imposta il volume iniziale dall'interfaccia e abilita l'audio
+        const initialVol = parseFloat(volSlider.value) / 100;
+        video.volume = initialVol;
+        video.muted = (initialVol === 0);
+
         videoTexture = new THREE.VideoTexture(video);
         videoTexture.minFilter = THREE.LinearFilter;
         videoTexture.magFilter = THREE.LinearFilter;
@@ -611,10 +681,19 @@
         sphereMat.uniforms.map.value = videoTexture;
         sphereMat.uniforms.hasTexture.value = 1.0;
 
+        // Avvio riproduzione con fallback sicuro se il browser limita l'audio in autoplay
         video.play().then(() => {
           playBtn.textContent = 'Pausa';
+          updateVolumeUI();
         }).catch(() => {
-          playBtn.textContent = 'Play';
+          // Fallback silenzioso: avvia comunque senza bloccare il video
+          video.muted = true;
+          video.play().then(() => {
+            playBtn.textContent = 'Pausa';
+            updateVolumeUI();
+          }).catch(() => {
+            playBtn.textContent = 'Play';
+          });
         });
 
       } else {
@@ -723,7 +802,9 @@
 
     // Hotkeys
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'h' || e.key === 'H') {
+      if (e.key === 'm' || e.key === 'M') {
+        toggleMute();
+      } else if (e.key === 'h' || e.key === 'H') {
         toggleHUD();
       } else if (e.key === 'r' || e.key === 'R') {
         resetCamera();
